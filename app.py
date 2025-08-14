@@ -546,12 +546,239 @@ with TAB_MERIDIO:
         st.plotly_chart(fig_j2, use_container_width=True)
 
 # =====================================
-# Placeholders das demais abas (serão preenchidas no 2º e 3º códigos)
+# MMX – Customer Experience (Seguros)
 # =====================================
 with TAB_MMX:
-    st.info("MMX será implementado no segundo código (overview, evolução, priorização, mini simulador).")
+    st.title("MMX – Customer Experience (Seguros)")
+    st.caption("Blocos: Overview • Evolução • Priorização • Mini simulador")
+    st.divider()
+
+    # ---------- Dados fictícios ----------
+    np.random.seed(17)
+    clientes = ["Cliente A", "Cliente B"]
+    fatores_mmx = {
+        "Atendimento": ["Cordialidade", "Agilidade", "Resolução no 1º contato"],
+        "Canais Digitais": ["Facilidade no app", "Estabilidade", "Autoatendimento"],
+        "Produto/Serviços": ["Coberturas", "Clareza de contrato", "Adequação ao perfil"],
+        "Preço/Valor": ["Preço percebido", "Custo-benefício", "Transparência de reajuste"],
+        "Suporte/Resolução": ["Pós-sinistro", "Prazo de retorno", "Acompanhamento do caso"],
+    }
+
+    # Score 0-1 por atributo (média por fator depois)
+    def mock_attr_scores(base_shift=0.0):
+        rows = []
+        for fator, attrs in fatores_mmx.items():
+            for a in attrs:
+                score = float(np.clip(np.random.normal(0.62 + base_shift, 0.10), 0.25, 0.95))
+                importancia = float(np.clip(np.random.normal(0.58, 0.12), 0.10, 0.95))
+                rows.append({"fator": fator, "atributo": a, "score": score, "importancia": importancia})
+        return pd.DataFrame(rows)
+
+    mmx_A = mock_attr_scores(base_shift=0.03)   # A levemente melhor
+    mmx_B = mock_attr_scores(base_shift=-0.02)  # B levemente pior
+
+    # ---------- 1) Overview ----------
+    st.subheader("Overview – Experiência por fator (Cliente A vs Cliente B)")
+    fa = mmx_A.groupby("fator", as_index=False)["score"].mean().rename(columns={"score": "A"})
+    fb = mmx_B.groupby("fator", as_index=False)["score"].mean().rename(columns={"score": "B"})
+    fcmp = fa.merge(fb, on="fator")
+    fcmp_m = fcmp.melt(id_vars=["fator"], value_vars=["A", "B"], var_name="cliente", value_name="score")
+
+    fig_ov = px.bar(fcmp_m, x="fator", y="score", color="cliente", barmode="group",
+                    text_auto=".0%", title="Média de experiência por fator")
+    fig_ov.update_layout(height=340, margin=dict(l=10, r=10, t=50, b=10))
+    fig_ov.update_yaxes(tickformat=",.0%")
+    st.plotly_chart(fig_ov, use_container_width=True)
+
+    # ---------- 2) Evolução ----------
+    st.subheader("Evolução – Satisfação e NPS (últimos 12 meses)")
+    meses = pd.date_range(end=pd.Timestamp.today().normalize(), periods=12, freq="MS")
+    evo = pd.DataFrame({
+        "mes": list(meses)*2,
+        "cliente": np.repeat(clientes, len(meses)),
+        "satisfacao": np.clip(np.linspace(0.62, 0.70, 12) + np.random.normal(0, 0.01, 24) + np.where(np.repeat(clientes, 12)=="Cliente A", 0.02, -0.01), 0.30, 0.95),
+        "nps": np.clip(np.linspace(0.28, 0.40, 12) + np.random.normal(0, 0.02, 24) + np.where(np.repeat(clientes, 12)=="Cliente A", 0.05, -0.02), -0.2, 0.9),
+    })
+    c1, c2 = st.columns(2)
+    with c1:
+        fig_s = px.line(evo, x="mes", y="satisfacao", color="cliente", markers=True, title="Satisfação (CSAT normalizado)")
+        fig_s.update_layout(height=320, margin=dict(l=10, r=10, t=50, b=10))
+        fig_s.update_yaxes(tickformat=",.0%")
+        st.plotly_chart(fig_s, use_container_width=True)
+    with c2:
+        fig_n = px.line(evo, x="mes", y="nps", color="cliente", markers=True, title="NPS (escala normalizada)")
+        fig_n.update_layout(height=320, margin=dict(l=10, r=10, t=50, b=10))
+        fig_n.update_yaxes(tickformat=",.0%")
+        st.plotly_chart(fig_n, use_container_width=True)
+
+    # ---------- 3) Priorização ----------
+    st.subheader("Priorização – Matriz Performance × Importância (15 atributos)")
+    pri = pd.concat([mmx_A.assign(cliente="A"), mmx_B.assign(cliente="B")], ignore_index=True)
+    # Usaremos os 15 atributos (5 fatores x 3 atributos)
+    pri["zona"] = np.where(
+        (pri["score"] < pri["score"].median()) & (pri["importancia"] >= pri["importancia"].median()), "Urgência",
+        np.where((pri["score"] >= pri["score"].median()) & (pri["importancia"] >= pri["importancia"].median()), "Proteger", "Acompanhar")
+    )
+    fig_pri = px.scatter(pri, x="score", y="importancia", color="zona", symbol="cliente", text="atributo",
+                         hover_data=["fator"], title="Atributos prioritários por cliente")
+    fig_pri.update_traces(textposition="top center")
+    fig_pri.update_layout(height=420, margin=dict(l=10, r=10, t=50, b=10))
+    fig_pri.update_xaxes(title="Performance", tickformat=",.0%")
+    fig_pri.update_yaxes(title="Importância", tickformat=",.0%")
+    st.plotly_chart(fig_pri, use_container_width=True)
+
+    # ---------- 4) Mini simulador ----------
+    st.subheader("Mini simulador – Impacto dos atributos em Satisfação → KPIs")
+    st.caption("Ajuste os fatores (±20%). Satisfação afeta: NPS (↑), Churn (↓), Reclamações (↓), Cross-sell (↑).")
+
+    # simularemos em nível de fator (5 sliders)
+    pesos_fator = {
+        "Atendimento": 0.28,
+        "Canais Digitais": 0.20,
+        "Produto/Serviços": 0.24,
+        "Preço/Valor": 0.16,
+        "Suporte/Resolução": 0.12,
+    }
+    colL, colR = st.columns((2,1))
+    with colL:
+        deltas = {}
+        for f in fatores_mmx.keys():
+            deltas[f] = st.slider(f"{f}", min_value=-20, max_value=20, value=0, step=1, help="Variação percentual do fator")
+
+        base_sat = 0.66
+        sat = base_sat * (1 + sum((deltas[f]/100.0)*pesos_fator[f] for f in pesos_fator))
+        sat = float(np.clip(sat, 0.01, 0.99))
+
+        # Mapeamentos simples (exemplo)
+        nps = np.clip(0.2 + 0.9*sat, 0.0, 0.99)            # ↑
+        churn = np.clip(0.25 - 0.25*sat, 0.01, 0.40)       # ↓
+        recl = np.clip(0.30 - 0.35*sat, 0.01, 0.35)        # ↓
+        cross = np.clip(0.10 + 0.8*sat, 0.02, 0.95)        # ↑
+
+    with colR:
+        metric_card("Satisfação (estimada)", f"{sat*100:.1f}%")
+        metric_card("NPS (estimado)", f"{nps*100:.1f}%")
+        metric_card("Churn (estimado)", f"{churn*100:.1f}%")
+        metric_card("Reclamações (estimado)", f"{recl*100:.1f}%")
+        metric_card("Cross-sell (estimado)", f"{cross*100:.1f}%")
+
+    st.markdown("**Impactos por fator**")
+    imp_rows = [{"Fator": f, "% Δ fator": f"{deltas[f]:+.0f}%", "Peso": f"{pesos_fator[f]*100:.0f}%"} for f in pesos_fator]
+    st.dataframe(pd.DataFrame(imp_rows), use_container_width=True, height=180)
+
+
+# =====================================
+# UXM – Digital Experience
+# =====================================
 with TAB_UXM:
-    st.info("UXM será implementado no segundo código (Big Five de UX, simulador de 3 colunas).")
+    st.title("UXM – Digital Experience")
+    st.caption("Blocos: Overview • Evolução • Priorização • Simulador (3 colunas)")
+    st.divider()
+
+    # ---------- Dados fictícios ----------
+    np.random.seed(23)
+    big_five = {
+        "Findability": ["Busca interna", "Arquitetura de informação", "Navegação"],
+        "Usability": ["Fluxos claros", "Aprendizado rápido", "Erros recuperáveis"],
+        "Performance": ["Velocidade", "Estabilidade", "Peso das páginas"],
+        "Trust & Security": ["Privacidade", "Transparência", "Confiabilidade"],
+        "Accessibility": ["Leitura", "Contraste", "Teclado/Screen reader"],
+    }
+
+    def mock_ux_scores(shift=0.0):
+        rows = []
+        for f, attrs in big_five.items():
+            for a in attrs:
+                s = float(np.clip(np.random.normal(0.60+shift, 0.10), 0.20, 0.95))
+                w = float(np.clip(np.random.normal(0.56, 0.12), 0.10, 0.95))
+                rows.append({"fator": f, "atributo": a, "score": s, "importancia": w})
+        return pd.DataFrame(rows)
+
+    uxm_A = mock_ux_scores(shift=0.03)
+    uxm_B = mock_ux_scores(shift=-0.02)
+
+    # ---------- 1) Overview ----------
+    st.subheader("Overview – Big Five de UX (A vs B)")
+    fa = uxm_A.groupby("fator", as_index=False)["score"].mean().rename(columns={"score": "A"})
+    fb = uxm_B.groupby("fator", as_index=False)["score"].mean().rename(columns={"score": "B"})
+    fcmp = fa.merge(fb, on="fator").melt(id_vars=["fator"], value_vars=["A","B"], var_name="marca", value_name="score")
+    fig_ux = px.bar(fcmp, x="fator", y="score", color="marca", barmode="group", text_auto=".0%", title="Scores por fator")
+    fig_ux.update_layout(height=340, margin=dict(l=10, r=10, t=50, b=10))
+    fig_ux.update_yaxes(tickformat=",.0%")
+    st.plotly_chart(fig_ux, use_container_width=True)
+
+    # ---------- 2) Evolução ----------
+    st.subheader("Evolução – UX Equity (últimos 12 meses)")
+    meses = pd.date_range(end=pd.Timestamp.today().normalize(), periods=12, freq="MS")
+    evo = pd.DataFrame({
+        "mes": list(meses)*2,
+        "marca": np.repeat(["Marca A","Marca B"], len(meses)),
+        "ux_equity": np.clip(np.linspace(0.55, 0.68, 12) + np.random.normal(0, 0.01, 24) + np.where(np.repeat(["Marca A","Marca B"], 12)=="Marca A", 0.02, -0.01), 0.25, 0.95)
+    })
+    fig_uxe = px.line(evo, x="mes", y="ux_equity", color="marca", markers=True, title="UX Equity (normalizado)")
+    fig_uxe.update_layout(height=320, margin=dict(l=10, r=10, t=50, b=10))
+    fig_uxe.update_yaxes(tickformat=",.0%")
+    st.plotly_chart(fig_uxe, use_container_width=True)
+
+    # ---------- 3) Priorização ----------
+    st.subheader("Priorização – Performance × Importância (Big Five detalhado)")
+    pri = pd.concat([uxm_A.assign(marca="A"), uxm_B.assign(marca="B")], ignore_index=True)
+    pri["zona"] = np.where(
+        (pri["score"] < pri["score"].median()) & (pri["importancia"] >= pri["importancia"].median()), "Urgência",
+        np.where((pri["score"] >= pri["score"].median()) & (pri["importancia"] >= pri["importancia"].median()), "Proteger", "Acompanhar")
+    )
+    fig_pu = px.scatter(pri, x="score", y="importancia", color="zona", symbol="marca", text="atributo",
+                        hover_data=["fator"], title="Detalhamento de atributos (Big Five)")
+    fig_pu.update_traces(textposition="top center")
+    fig_pu.update_layout(height=420, margin=dict(l=10, r=10, t=50, b=10))
+    fig_pu.update_xaxes(title="Performance", tickformat=",.0%")
+    fig_pu.update_yaxes(title="Importância", tickformat=",.0%")
+    st.plotly_chart(fig_pu, use_container_width=True)
+
+    # ---------- 4) Simulador (3 colunas) ----------
+    st.subheader("Simulador – Big Five → UX Equity → Métricas de negócio")
+    st.caption("Ajuste os 5 fatores (±20%). UX Equity impacta: Conversão (↑), Retenção (↑), Suporte (↓).")
+
+    pesos = {
+        "Findability": 0.22,
+        "Usability": 0.26,
+        "Performance": 0.18,
+        "Trust & Security": 0.20,
+        "Accessibility": 0.14,
+    }
+    base_ux = 0.60
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        d = {}
+        for f in pesos.keys():
+            d[f] = st.slider(f, min_value=-20, max_value=20, value=0, step=1)
+        ux_equity = base_ux * (1 + sum((d[f]/100.0)*pesos[f] for f in pesos))
+        ux_equity = float(np.clip(ux_equity, 0.01, 0.99))
+        metric_card("UX Equity (estimado)", f"{ux_equity*100:.1f}%")
+
+    with col2:
+        # Regras simples de negócio
+        conversao = np.clip(0.08 + 0.8*ux_equity, 0.01, 0.95)   # ↑
+        retencao = np.clip(0.70 + 0.3*ux_equity, 0.30, 0.99)    # ↑
+        suporte = np.clip(0.35 - 0.4*ux_equity, 0.01, 0.40)     # ↓ (chamados/contatos)
+        metric_card("Conversão (estimada)", f"{conversao*100:.1f}%")
+        metric_card("Retenção (estimada)", f"{retencao*100:.1f}%")
+        metric_card("Chamados de suporte (↓)", f"{suporte*100:.1f}%")
+
+    with col3:
+        # Tabela de impactos por fator
+        imp_rows = [{"Fator": f, "% Δ fator": f"{d[f]:+.0f}%", "Peso": f"{pesos[f]*100:.0f}%"} for f in pesos]
+        st.dataframe(pd.DataFrame(imp_rows), use_container_width=True, height=220)
+        # Mini gráfico
+        fig_k = px.bar(pd.DataFrame({
+            "kpi": ["Conversão","Retenção","Suporte (↓)"],
+            "valor": [conversao, retencao, suporte]
+        }), x="kpi", y="valor", text_auto=".0%")
+        fig_k.update_layout(height=220, margin=dict(l=10, r=10, t=10, b=10))
+        fig_k.update_yaxes(tickformat=",.0%")
+        st.plotly_chart(fig_k, use_container_width=True)
+
 with TAB_DOMUS:
     st.info("Domus será implementado no terceiro código (pilares de imagem + simulador voltado a colaboradores).")
 with TAB_EBRAIN:
