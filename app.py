@@ -779,11 +779,252 @@ with TAB_UXM:
         fig_k.update_yaxes(tickformat=",.0%")
         st.plotly_chart(fig_k, use_container_width=True)
 
-with TAB_DOMUS:
-    st.info("Domus será implementado no terceiro código (pilares de imagem + simulador voltado a colaboradores).")
-with TAB_EBRAIN:
-    st.info("e‑BRAIN será implementado no terceiro código (estrutura similar ao BRAIN para experiência dos colaboradores).")
 
+# =====================================
+# DOMUS – Employee Experience (Colaboradores)
+# =====================================
+with TAB_DOMUS:
+    st.title("Domus – Employee Experience")
+    st.caption("Pilares de Imagem • Evolução • Priorização • Simulador (EX → KPIs de Pessoas)")
+    st.divider()
+
+    # --------- Pilares (dos documentos) ---------
+    PILARES = {
+        "Conviver": ["Cultura", "Ambiente", "Flexibilidade", "Liderança & Colegas", "Identificação"],
+        "Ser": ["Carreira", "Aprendizado", "Visibilidade", "Reconhecimento", "Remuneração"],
+        "Viver": ["Work-life balance", "Estabilidade", "Benefícios", "Carga de trabalho", "Autonomia"],
+        "Inspirar": ["Reputação", "Diversidade & ESG", "Inovação", "Propósito", "Polêmica"],
+    }  # conforme decks de Employer Brand/Employee Experience (Conviver/Ser/Viver/Inspirar)
+
+    # --------- Dados fictícios: imagem por pilar (Colaborador vs Mercado) ---------
+    np.random.seed(101)
+    pilares_rows = []
+    for pilar, attrs in PILARES.items():
+        for contexto in ["Colaboradores", "Mercado de talentos"]:
+            score = float(np.clip(np.random.normal(0.64 if contexto=="Colaboradores" else 0.58, 0.08), 0.20, 0.95))
+            pilares_rows.append({
+                "pilar": pilar,
+                "contexto": contexto,
+                "score": score,
+                "hover": ", ".join(attrs)
+            })
+    df_pilares = pd.DataFrame(pilares_rows)
+
+    st.subheader("Pilares de imagem (Colaboradores × Mercado)")
+    fig_domus_img = px.bar(
+        df_pilares, x="pilar", y="score", color="contexto", barmode="group",
+        text_auto=".0%", hover_data={"hover": True, "pilar": False, "score":":.0%", "contexto": False},
+        title="Conviver • Ser • Viver • Inspirar"
+    )
+    # Hover custom: mostra subatributos de cada pilar
+    fig_domus_img.update_traces(hovertemplate="<b>%{x}</b><br>Score: %{y:.0%}<br>Atributos: %{customdata[0]}")
+    fig_domus_img.update_yaxes(tickformat=",.0%")
+    fig_domus_img.update_layout(height=360, margin=dict(l=10, r=10, t=50, b=10))
+    st.plotly_chart(fig_domus_img, use_container_width=True)
+
+    st.divider()
+
+    # --------- Evolução de EX (eNPS e Retenção/Turnover) ---------
+    st.subheader("Evolução – EX (eNPS) e Turnover (últimos 12 meses)")
+    meses = pd.date_range(end=pd.Timestamp.today().normalize(), periods=12, freq="MS")
+    ex_evo = pd.DataFrame({
+        "mes": list(meses)*2,
+        "grupo": np.repeat(["Colaboradores", "Mercado de talentos"], len(meses)),
+        "eNPS": np.clip(np.linspace(0.30, 0.45, 12).tolist() + np.linspace(0.22, 0.35, 12).tolist(), -0.2, 0.9),
+        "turnover": np.clip(np.linspace(0.20, 0.16, 12).tolist() + np.linspace(0.24, 0.21, 12).tolist(), 0.02, 0.40),
+    })
+    c1, c2 = st.columns(2)
+    with c1:
+        fig_enps = px.line(ex_evo, x="mes", y="eNPS", color="grupo", markers=True, title="eNPS (normalizado)")
+        fig_enps.update_yaxes(tickformat=",.0%")
+        fig_enps.update_layout(height=320, margin=dict(l=10, r=10, t=50, b=10))
+        st.plotly_chart(fig_enps, use_container_width=True)
+    with c2:
+        fig_to = px.line(ex_evo, x="mes", y="turnover", color="grupo", markers=True, title="Turnover (↓ é melhor)")
+        fig_to.update_yaxes(tickformat=",.0%")
+        fig_to.update_layout(height=320, margin=dict(l=10, r=10, t=50, b=10))
+        st.plotly_chart(fig_to, use_container_width=True)
+
+    st.divider()
+
+    # --------- Priorização – Matriz Performance × Importância (25 atributos, 5 por pilar) ---------
+    st.subheader("Priorização – Performance × Importância (Pilares e seus atributos)")
+    pr_rows = []
+    for pilar, attrs in PILARES.items():
+        for a in attrs:
+            perf = float(np.clip(np.random.normal(0.60, 0.12), 0.10, 0.95))
+            imp = float(np.clip(np.random.normal(0.58, 0.15), 0.10, 0.95))
+            pr_rows.append({"pilar": pilar, "atributo": a, "performance": perf, "importancia": imp})
+    df_pr = pd.DataFrame(pr_rows)
+    df_pr["zona"] = np.where(
+        (df_pr["performance"] < df_pr["performance"].median()) & (df_pr["importancia"] >= df_pr["importancia"].median()), "Desenvolver agora!",
+        np.where((df_pr["performance"] >= df_pr["performance"].median()) & (df_pr["importancia"] >= df_pr["importancia"].median()), "Comunicar agora!", "Acompanhar")
+    )
+    fig_pr = px.scatter(df_pr, x="performance", y="importancia", color="zona", text="atributo", hover_data=["pilar"],
+                        title="Matriz de Prioridades (EX)", size_max=18)
+    fig_pr.update_traces(textposition="top center")
+    fig_pr.update_xaxes(tickformat=",.0%", title="Performance")
+    fig_pr.update_yaxes(tickformat=",.0%", title="Importância")
+    fig_pr.update_layout(height=420, margin=dict(l=10, r=10, t=50, b=10))
+    st.plotly_chart(fig_pr, use_container_width=True)
+
+    st.divider()
+
+    # --------- Simulador – EX → KPIs de Pessoas ---------
+    st.subheader("Simulador – EX (pilares) → KPIs de Pessoas")
+    st.caption("Ajuste os 4 pilares (±20%). EX impacta eNPS (↑), Turnover (↓), Reclamações internas (↓), Produtividade (↑).")
+
+    pesos = {"Conviver": 0.28, "Ser": 0.26, "Viver": 0.22, "Inspirar": 0.24}
+    base_ex = 0.60
+
+    cL, cM, cR = st.columns((1,1,1))
+    with cL:
+        deltas = {p: st.slider(p, -20, 20, 0, 1, help=", ".join(PILARES[p])) for p in pesos}
+        ex_equity = base_ex * (1 + sum((deltas[p]/100.0)*pesos[p] for p in pesos))
+        ex_equity = float(np.clip(ex_equity, 0.01, 0.99))
+        metric_card("EX (estimado)", f"{ex_equity*100:.1f}%")
+
+    with cM:
+        enps = np.clip(0.10 + 0.9*ex_equity, -0.20, 0.95)        # ↑
+        turnover = np.clip(0.30 - 0.35*ex_equity, 0.02, 0.40)    # ↓
+        reclama = np.clip(0.28 - 0.30*ex_equity, 0.01, 0.40)     # ↓
+        prod = np.clip(0.60 + 0.5*ex_equity, 0.10, 0.99)         # ↑
+        metric_card("eNPS (↑)", f"{enps*100:.1f}%")
+        metric_card("Turnover (↓)", f"{turnover*100:.1f}%")
+        metric_card("Reclamações (↓)", f"{reclama*100:.1f}%")
+        metric_card("Produtividade (↑)", f"{prod*100:.1f}%")
+
+    with cR:
+        imp_rows = [{"Pilar": p, "% Δ pilar": f"{deltas[p]:+.0f}%", "Peso": f"{pesos[p]*100:.0f}%"} for p in pesos]
+        st.dataframe(pd.DataFrame(imp_rows), use_container_width=True, height=212)
+        fig_kpis = px.bar(pd.DataFrame({
+            "kpi": ["eNPS (↑)", "Turnover (↓)", "Reclamações (↓)", "Produtividade (↑)"],
+            "valor": [enps, turnover, reclama, prod]
+        }), x="kpi", y="valor", text_auto=".0%")
+        fig_kpis.update_yaxes(tickformat=",.0%")
+        fig_kpis.update_layout(height=212, margin=dict(l=10, r=10, t=10, b=10))
+        st.plotly_chart(fig_kpis, use_container_width=True)
+
+
+# =====================================
+# e-BRAIN – Employer Brand Insights (marca empregadora)
+# =====================================
+with TAB_EBRAIN:
+    st.title("e-BRAIN – Employer Brand Insights")
+    st.caption("Módulos: Comportamento • Memória • Imagem • Equity • Estratégia")
+    st.divider()
+
+    # --------- Pilares (Conviver / Ser / Viver / Inspirar) e subatributos ---------
+    PILARES_E = {
+        "Conviver": ["Cultura", "Ambiente", "Flexibilidade", "Liderança & Colegas", "Identificação"],
+        "Ser": ["Carreira", "Aprendizado", "Visibilidade", "Reconhecimento", "Remuneração"],
+        "Viver": ["Work-life balance", "Estabilidade", "Benefícios", "Carga de trabalho", "Autonomia"],
+        "Inspirar": ["Reputação", "Diversidade & ESG", "Inovação", "Propósito", "Polêmica"],
+    }  # conforme deck de Employer Brand/Employee Experience
+
+    # --------- 1) Comportamento (mercado de talentos) ---------
+    st.subheader("Comportamento – Onde talentos buscam e avaliam empregadores")
+    canais = ["LinkedIn", "Google", "Glassdoor", "Instagram", "YouTube", "Comunidades", "Indicações", "Portais de Vagas"]
+    share = np.clip(np.random.dirichlet(np.ones(len(canais))) * 1.8, 0.03, None)
+    df_cb = pd.DataFrame({"canal": canais, "share": share})
+    fig_cb = px.bar(df_cb, x="canal", y="share", text_auto=".0%", title="Canais de busca/avaliação")
+    fig_cb.update_yaxes(tickformat=",.0%")
+    fig_cb.update_layout(height=320, margin=dict(l=10, r=10, t=50, b=10))
+    st.plotly_chart(fig_cb, use_container_width=True)
+
+    st.divider()
+
+    # --------- 2) Memória (Funil de marca empregadora) ---------
+    st.subheader("Memória – Funil de marca empregadora")
+    etapas = ["Lembrança", "Familiaridade", "Consideração", "Preferência"]
+    marcas = ["Marca A", "Marca B", "Marca C", "Marca D", "Marca E"]
+    funil_rows = []
+    for m in marcas:
+        base = np.clip(np.random.normal(0.25, 0.06), 0.08, 0.40)
+        fam = np.clip(base + np.random.normal(0.20, 0.05), 0.12, 0.90)
+        cons = np.clip(fam - np.random.uniform(0.05, 0.18), 0.05, fam)
+        pref = np.clip(cons - np.random.uniform(0.03, 0.12), 0.01, cons)
+        vals = [base, fam, cons, pref]
+        for e, v in zip(etapas, vals):
+            funil_rows.append({"marca": m, "etapa": e, "valor": float(v)})
+    df_funil_e = pd.DataFrame(funil_rows)
+    fig_f = px.bar(df_funil_e, x="etapa", y="valor", color="marca", barmode="group", text_auto=".0%",
+                   title="Lembrança • Familiaridade • Consideração • Preferência")
+    fig_f.update_yaxes(tickformat=",.0%")
+    fig_f.update_layout(height=360, margin=dict(l=10, r=10, t=50, b=10))
+    st.plotly_chart(fig_f, use_container_width=True)
+
+    st.divider()
+
+    # --------- 3) Imagem (pilares com hover de subatributos) ---------
+    st.subheader("Imagem – Pilares de percepção (A vs B)")
+    marcas_comp = ["Marca A", "Marca B"]
+    img_rows = []
+    for marca in marcas_comp:
+        for pilar, attrs in PILARES_E.items():
+            score = float(np.clip(np.random.normal(0.62 if marca=="Marca A" else 0.58, 0.08), 0.20, 0.95))
+            img_rows.append({"marca": marca, "pilar": pilar, "score": score, "hover": ", ".join(attrs)})
+    df_img_e = pd.DataFrame(img_rows)
+    fig_i = px.bar(df_img_e, x="pilar", y="score", color="marca", barmode="group", text_auto=".0%",
+                   hover_data={"hover": True, "pilar": False, "score":":.0%", "marca": False},
+                   title="Conviver • Ser • Viver • Inspirar")
+    fig_i.update_traces(hovertemplate="<b>%{x}</b><br>Score: %{y:.0%}<br>Atributos: %{customdata[0]}")
+    fig_i.update_yaxes(tickformat=",.0%")
+    fig_i.update_layout(height=360, margin=dict(l=10, r=10, t=50, b=10))
+    st.plotly_chart(fig_i, use_container_width=True)
+
+    st.divider()
+
+    # --------- 4) Equity – KPIs de Employer Brand ---------
+    st.subheader("Equity – KPIs (A vs B)")
+    kpis = ["Me candidataria", "Aceitaria oferta menor", "Recomendaria", "Não trocaria de empresa", "É meu sonho trabalhar lá", "Daria meu máximo", "eNPS"]
+    eq_vals = pd.DataFrame({
+        "kpi": kpis,
+        "Marca A": np.clip(np.random.normal(0.60, 0.08, len(kpis)), 0.20, 0.95),
+        "Marca B": np.clip(np.random.normal(0.54, 0.08, len(kpis)), 0.20, 0.92),
+    })
+    eqm = eq_vals.melt(id_vars=["kpi"], value_vars=["Marca A","Marca B"], var_name="marca", value_name="score")
+    fig_eq = px.bar(eqm, x="kpi", y="score", color="marca", barmode="group", text_auto=".0%", title="KPIs de Employer Brand")
+    fig_eq.update_yaxes(tickformat=",.0%")
+    fig_eq.update_layout(height=340, margin=dict(l=10, r=10, t=40, b=10))
+    st.plotly_chart(fig_eq, use_container_width=True)
+
+    st.divider()
+
+    # --------- 5) Estratégia – Priorização + EBIX (Participação do Branding) ---------
+    st.subheader("Estratégia – Priorização & EBIX (Participação de Branding no resultado)")
+
+    # Matriz perf x importância (25 subatributos, 5 por pilar)
+    pr_rows = []
+    for pilar, attrs in PILARES_E.items():
+        for a in attrs:
+            perf = float(np.clip(np.random.normal(0.58, 0.12), 0.10, 0.95))
+            imp = float(np.clip(np.random.normal(0.60, 0.15), 0.10, 0.95))
+            pr_rows.append({"pilar": pilar, "atributo": a, "performance": perf, "importancia": imp})
+    df_pi_e = pd.DataFrame(pr_rows)
+    df_pi_e["zona"] = np.where(
+        (df_pi_e["performance"] < df_pi_e["performance"].median()) & (df_pi_e["importancia"] >= df_pi_e["importancia"].median()), "Desenvolver agora!",
+        np.where((df_pi_e["performance"] >= df_pi_e["performance"].median()) & (df_pi_e["importancia"] >= df_pi_e["importancia"].median()), "Comunicar agora!", "Acompanhar")
+    )
+    fig_pi = px.scatter(df_pi_e, x="performance", y="importancia", color="zona", text="atributo", hover_data=["pilar"],
+                        title="Matriz de Prioridades (Employer Brand)", size_max=18)
+    fig_pi.update_traces(textposition="top center")
+    fig_pi.update_xaxes(tickformat=",.0%", title="Performance")
+    fig_pi.update_yaxes(tickformat=",.0%", title="Importância")
+    fig_pi.update_layout(height=420, margin=dict(l=10, r=10, t=50, b=10))
+    st.plotly_chart(fig_pi, use_container_width=True)
+
+    # EBIX – participação do Employer Branding em resultados (R² ~ “participação”)
+    kpis_res = ["Atração (me candidaria)", "Retenção (não trocaria)", "Aceite de ofertas", "Engajamento (daria meu máximo)", "eNPS"]
+    ebix = pd.DataFrame({
+        "kpi": kpis_res,
+        "participacao_branding": np.clip(np.random.normal(0.64, 0.10, len(kpis_res)), 0.30, 0.92)
+    })
+    fig_ebix = px.bar(ebix, x="kpi", y="participacao_branding", text_auto=".0%", title="EBIX – Participação de Branding no resultado")
+    fig_ebix.update_yaxes(tickformat=",.0%")
+    fig_ebix.update_layout(height=320, margin=dict(l=10, r=10, t=30, b=10))
+    st.plotly_chart(fig_ebix, use_container_width=True)
+    
 st.divider()
 st.write(":grey[Demo Okiar • Dados 100% fictícios • v0.1 – Estrutura + BRAIN + MERIDIO]")
 
