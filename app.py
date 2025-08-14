@@ -1,20 +1,41 @@
 # -*- coding: utf-8 -*-
+"""
+Okiar – Demo de Produtos (Streamlit)
+------------------------------------
+Abas: BRAIN • MERIDIO • MMX • UXM • Domus • e-BRAIN
 
+Notas de implementação:
+- Filtros de marca ficam **apenas na aba BRAIN** (Sidebar não tem filtros).
+- Fatores/atributos adequados a bancos (sem atributos fora de contexto).
+- Simuladores com efeitos mais visíveis nos sliders (pesos/curvas ajustados).
+- Van Westendorp: plot maior + cálculo das interseções e destaque da faixa ideal.
+- Correções de shape/broadcasting em séries temporais (ex.: uso de np.tile).
+- Hovers com custom_data para textos de atributos por fator/pilar.
+
+Como rodar:
+    streamlit run app.py
+"""
+
+# =============================================================================
+# Imports
+# =============================================================================
 import math
 import random
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
-from datetime import date
+from typing import Dict, List, Tuple, Optional, Callable
 
+from datetime import date, datetime
 import numpy as np
 import pandas as pd
+
 import plotly.express as px
 import plotly.graph_objects as go
+
 import streamlit as st
 
-# -----------------------------------------------------------------------------
-# CONFIG BÁSICA
-# -----------------------------------------------------------------------------
+# =============================================================================
+# Config / Tema
+# =============================================================================
 st.set_page_config(
     page_title="Okiar – Demo de Produtos",
     page_icon="🧠",
@@ -61,21 +82,21 @@ details > summary {{ cursor: pointer; }}
 
 st.markdown(f"<style>{CUSTOM_CSS}</style>", unsafe_allow_html=True)
 
-# -----------------------------------------------------------------------------
-# RANDOM SEED
-# -----------------------------------------------------------------------------
-SEED = 7
+# =============================================================================
+# Seeds
+# =============================================================================
+SEED = 11
 random.seed(SEED)
 np.random.seed(SEED)
 TODAY = date.today()
 
-# -----------------------------------------------------------------------------
-# HELPERS VISUAIS
-# -----------------------------------------------------------------------------
-
-def metric_card(label: str, value: str, delta: float | None = None):
+# =============================================================================
+# Helpers – UI e Matemática
+# =============================================================================
+def metric_card(label: str, value: str, delta: Optional[float] = None):
+    """Card de métrica com delta opcional."""
     delta_html = ""
-    if delta is not None:
+    if isinstance(delta, (int, float)):
         cls = "metric-delta-up" if delta >= 0 else "metric-delta-down"
         arrow = "↑" if delta >= 0 else "↓"
         delta_html = f"<div class='{cls}'>{arrow} {delta:.1f}%</div>"
@@ -91,8 +112,35 @@ def metric_card(label: str, value: str, delta: float | None = None):
     )
 
 
-def pct(x):
+def pct(x: float) -> str:
     return f"{x*100:.1f}%"
+
+
+def clamp(x: float, lo: float, hi: float) -> float:
+    return float(max(lo, min(hi, x)))
+
+
+def logistic(x: float, k: float = 6.0, x0: float = 0.0) -> float:
+    """Curva logística para suavizar impactos (para simuladores)."""
+    return 1.0 / (1.0 + math.exp(-k * (x - x0)))
+
+
+def soft_effect(delta_pct: float, weight: float, scale: float = 1.0) -> float:
+    """
+    Converte uma variação percentual de fator (slider) em efeito,
+    usando peso e uma leve não-linearidade.
+    """
+    # delta_pct em [-1.0, 1.0]
+    # Curva: sinal preservado, amplitude cresce de modo crescente
+    sign = 1.0 if delta_pct >= 0 else -1.0
+    mag = abs(delta_pct)
+    curved = (mag ** 1.15)  # leve potência para ampliar fim de curso
+    return sign * curved * weight * scale
+
+
+def weighted_sum(deltas: Dict[str, float], weights: Dict[str, float], scale: float = 1.0) -> float:
+    """Soma ponderada de deltas com pesos e escala global."""
+    return sum(soft_effect(deltas[k], weights.get(k, 0.0), scale=scale) for k in deltas)
 
 
 def line_pct(df: pd.DataFrame, x: str, y: str, color: str, title: str, height: int = 320):
@@ -106,9 +154,10 @@ def line_pct(df: pd.DataFrame, x: str, y: str, color: str, title: str, height: i
     return fig
 
 
-def bars_pct(df: pd.DataFrame, x: str, y: str, color: str, title: str, height: int = 320):
-    fig = px.bar(df, x=x, y=y, color=color, barmode="group", text_auto=".0%")
+def bars_pct(df: pd.DataFrame, x: str, y: str, color: str, title: str, height: int = 320, barmode: str = "group"):
+    fig = px.bar(df, x=x, y=y, color=color, barmode=barmode, text_auto=".0%")
     fig.update_layout(title=title, height=height, margin=dict(l=10, r=10, t=40, b=10))
+    fig.update_yaxes(tickformat=",.0%")
     return fig
 
 
@@ -122,18 +171,8 @@ def scatter_perf_import(df: pd.DataFrame, x: str, y: str, color: str, text: str,
     fig = px.scatter(df, x=x, y=y, color=color, text=text, size_max=18)
     fig.update_traces(textposition="top center")
     fig.update_layout(title=title, height=height, margin=dict(l=10, r=10, t=40, b=10))
-    return fig
-
-
-def radar_compare(categories: List[str], a_vals: List[float], b_vals: List[float], a_name: str, b_name: str, title: str):
-    # plotly polar
-    df = pd.DataFrame({
-        'categoria': categories * 2,
-        'score': a_vals + b_vals,
-        'marca': [a_name]*len(categories) + [b_name]*len(categories)
-    })
-    fig = px.line_polar(df, r='score', theta='categoria', color='marca', line_close=True)
-    fig.update_layout(title=title, height=380, margin=dict(l=10, r=10, t=40, b=10))
+    fig.update_xaxes(tickformat=",.0%")
+    fig.update_yaxes(tickformat=",.0%")
     return fig
 
 
@@ -145,201 +184,174 @@ def alert_box(titulo: str, texto: str, nivel: str = "normal"):
         cls += " alert-alto"
     st.markdown(f"<div class='{cls}'><b>{titulo}</b><br/>{texto}</div>", unsafe_allow_html=True)
 
-# -----------------------------------------------------------------------------
-# DADOS MOCK (BRAIN e MERIDIO)
-# -----------------------------------------------------------------------------
 
-BRANDS = ["Banco Áquila", "Banco Boreal", "Banco Cobalto", "Banco Delta", "Banco Épsilon"]
-A_BRAND = BRANDS[0]
-B_BRAND = BRANDS[1]
+# =============================================================================
+# Dados base e geradores (bancos)
+# =============================================================================
+BANKS = ["RedBank", "GreenBank", "GreyBank", "PurpleBank", "BlueBank"]
+MEDIA_CHANNELS = ["TV Aberta", "TV Paga", "YouTube", "TikTok", "Instagram", "Google", "Portais", "Rádio", "Out of Home"]
 
-MEDIA_HABITS = ["TV Aberta", "TV Paga", "YouTube", "TikTok", "Instagram", "Google", "Portais", "Rádio", "Out of Home"]
-FACTORS = {
-    "Qualidade": ["Sabor", "Aroma", "Estética", "Durabilidade", "Acabamento"],
-    "Performance": ["Preço justo", "Distribuição", "Disponibilidade", "Comunicação", "Promoções"],
-    "Juventude": ["Moderna", "Alegre", "Ousada", "Divertida", "Inovadora"],
-    "Segurança": ["Saudável", "Credibilidade", "Confiável", "Privacidade", "Sem falhas"],
-    "Proximidade": ["Combina comigo", "Reflete meus valores", "Minha cara", "Faz sentido", "Tem a ver comigo"],
+# FATORES e atributos de IMAGEM adequados a bancos (5x5 = 25)
+IMAGE_FACTORS: Dict[str, List[str]] = {
+    "Confiança & Segurança": ["Confiável", "Transparência", "Segurança de dados", "Solidez financeira", "Privacidade"],
+    "Experiência Digital": ["Facilidade no app", "Estabilidade", "Velocidade", "Jornadas sem fricção", "Autoatendimento"],
+    "Valor & Tarifas": ["Preço justo", "Clareza de tarifas", "Benefícios", "Programas de pontos", "Custo-benefício"],
+    "Atendimento & Suporte": ["Rapidez", "Cordialidade", "Resolução 1º contato", "Multicanal", "Acompanhamento"],
+    "Proximidade & Marca": ["Comunicação clara", "Identificação com a marca", "Responsabilidade social", "Inovação", "Recomendação"],
 }
 
-# 25 atributos (5 fatores x 5 atributos) – performance e importância simuladas
-ATTR_ROWS = []
-for f, attrs in FACTORS.items():
-    for a in attrs:
-        perf_a = float(np.clip(np.random.normal(0.62 if f in ["Qualidade", "Segurança"] else 0.55, 0.12), 0.2, 0.95))
-        imp_a = float(np.clip(np.random.normal(0.60 if f in ["Segurança", "Proximidade"] else 0.50, 0.15), 0.1, 0.95))
-        ATTR_ROWS.append({"fator": f, "atributo": a, "performance": perf_a, "importancia": imp_a})
-DF_ATTR = pd.DataFrame(ATTR_ROWS)
-
-# Habitos de mídia (BRAIN / MERIDIO – Comportamento)
-DF_MEDIA = pd.DataFrame({
-    "canal": MEDIA_HABITS,
-    A_BRAND: np.clip(np.random.dirichlet(np.ones(len(MEDIA_HABITS))) * 1.7, 0.02, None),
-    B_BRAND: np.clip(np.random.dirichlet(np.ones(len(MEDIA_HABITS))) * 1.7, 0.02, None),
-})
-DF_MEDIA["Geral"] = (DF_MEDIA[A_BRAND] + DF_MEDIA[B_BRAND]) / 2
-
-# Funil (top-of-mind + 4 estágios – 5 marcas)
-FUNIL_STAGES = ["Top of mind", "Lembrança", "Familiaridade", "Consideração", "Preferência"]
-rows = []
-for brand in BRANDS:
-    base = np.clip(np.random.normal(0.20, 0.06), 0.05, 0.40)
-    lemb = np.clip(base + np.random.normal(0.25, 0.05), 0.10, 0.85)
-    fam = np.clip(lemb + np.random.normal(0.10, 0.04), 0.10, 0.95)
-    cons = np.clip(fam - np.random.uniform(0.05, 0.20), 0.05, fam)
-    pref = np.clip(cons - np.random.uniform(0.03, 0.12), 0.01, cons)
-    vals = [base, lemb, fam, cons, pref]
-    for s, v in zip(FUNIL_STAGES, vals):
-        rows.append({"marca": brand, "etapa": s, "valor": float(v)})
-DF_FUNIL = pd.DataFrame(rows)
-
-# Imagem – fatores (scores 0-1) com hover listando atributos
-IMG_ROWS = []
-for brand in [A_BRAND, B_BRAND]:
-    for f, attrs in FACTORS.items():
-        score = float(np.clip(np.random.normal(0.62 if brand==A_BRAND else 0.58, 0.08), 0.2, 0.95))
-        IMG_ROWS.append({"marca": brand, "fator": f, "score": score, "hover": ", ".join(attrs)})
-DF_IMG = pd.DataFrame(IMG_ROWS)
-
-# Equity – comparar A vs B
-EQUITY_METRICS = [
+EQUITY_KPIS = [
     "Intenção abrir conta", "Intenção recomendar", "Satisfação",
     "Intenção contratar crédito", "Principalidade"
 ]
-DF_EQ = pd.DataFrame({
-    "kpi": EQUITY_METRICS,
-    A_BRAND: np.clip(np.random.normal(0.62, 0.08, len(EQUITY_METRICS)), 0.2, 0.95),
-    B_BRAND: np.clip(np.random.normal(0.57, 0.08, len(EQUITY_METRICS)), 0.2, 0.90),
-})
 
-# Estratégia – matriz perf x importância (25 atributos do DF_ATTR)
-# e “Participação de Branding no resultado” (R² simulado por KPI)
-BRANDING_IMPACT = pd.DataFrame({
-    "kpi": ["Intenção abrir conta", "Satisfação", "Intenção recomendar", "Principalidade"],
-    "participacao_branding": np.clip(np.random.normal(0.68, 0.08, 4), 0.35, 0.90)
-})
+FUNNEL_STAGES = ["Top of mind", "Lembrança", "Familiaridade", "Consideração", "Preferência"]
 
-# ------------------- MERIDIO -------------------
-# Personas – 3 faixas (A/B/C), 3 personas por faixa
-PERSONA_GROUPS = {
-    "A": ["Os Apressados", "Os Visionários", "Os Refinados"],
-    "B": ["Os Organizados", "Os Astutos", "Os Exploradores"],
-    "C": ["Os Práticos", "Os Descolados", "Os Cautelosos"],
-}
-PERSONA_DESC = {
-    "Os Apressados": "Valorizam rapidez e conveniência; baixa tolerância a fricção.",
-    "Os Visionários": "Buscam inovação e status; adotam novidades cedo.",
-    "Os Refinados": "Preferem qualidade premium e atendimento diferenciado.",
-    "Os Organizados": "Planejam finanças; respondem bem a programas de fidelidade.",
-    "Os Astutos": "Caçadores de valor; sensíveis a preço e benefícios.",
-    "Os Exploradores": "Experimentam marcas; propensos a cross-sell.",
-    "Os Práticos": "Objetivos e sensíveis a preço; pouca paciência para burocracia.",
-    "Os Descolados": "Digitais, influenciados por social e creators.",
-    "Os Cautelosos": "Aversos a risco; exigem provas sociais e garantias.",
-}
 
-# Hábitos de mídia / frequência / ticket variando por persona
-BASE_MEDIA = DF_MEDIA.set_index("canal")["Geral"].to_dict()
+def gen_media_habits(banks: List[str], channels: List[str]) -> pd.DataFrame:
+    rng = np.random.default_rng(SEED + 100)
+    cols = {b: np.clip(rng.dirichlet(np.ones(len(channels))) * 1.8, 0.02, None) for b in banks}
+    df = pd.DataFrame({"canal": channels, **cols})
+    df["Geral"] = df[banks].mean(axis=1)
+    return df
 
-def persona_adjustment(name: str, base: Dict[str, float]) -> Dict[str, float]:
-    # Aplica pequenos ajustes por persona
-    adj = {k: v for k, v in base.items()}
-    if "Descolados" in name or "Exploradores" in name:
-        for k in ["TikTok", "Instagram", "YouTube"]:
-            adj[k] = min(adj[k]*1.35, 0.5)
-    if "Cautelosos" in name:
-        for k in ["TV Aberta", "Portais", "Google"]:
-            adj[k] = min(adj[k]*1.25, 0.6)
-    if "Refinados" in name:
-        for k in ["TV Paga", "Out of Home", "Instagram"]:
-            adj[k] = min(adj[k]*1.20, 0.55)
-    s = sum(adj.values())
-    return {k: v/s for k, v in adj.items()}
 
-PERSONA_MEDIA = {p: persona_adjustment(p, BASE_MEDIA) for grp in PERSONA_GROUPS.values() for p in grp}
-PERSONA_FREQ = {p: float(np.clip(np.random.normal(2.6, 0.6), 0.5, 5.0)) for p in PERSONA_MEDIA.keys()}  # vezes/mês
-PERSONA_TICKET = {p: float(np.clip(np.random.normal(180, 60), 40, 600)) for p in PERSONA_MEDIA.keys()}  # R$
+def gen_funnel(banks: List[str]) -> pd.DataFrame:
+    rng = np.random.default_rng(SEED + 200)
+    rows = []
+    for brand in banks:
+        base = float(np.clip(rng.normal(0.20, 0.06), 0.05, 0.40))            # Top of mind
+        lemb = float(np.clip(base + rng.normal(0.25, 0.05), 0.10, 0.85))     # Lembrança
+        fam = float(np.clip(lemb + rng.normal(0.10, 0.04), 0.10, 0.95))      # Familiaridade
+        cons = float(np.clip(fam - rng.uniform(0.05, 0.20), 0.05, fam))      # Consideração
+        pref = float(np.clip(cons - rng.uniform(0.03, 0.12), 0.01, cons))    # Preferência
+        vals = [base, lemb, fam, cons, pref]
+        for s, v in zip(FUNNEL_STAGES, vals):
+            rows.append({"marca": brand, "etapa": s, "valor": v})
+    return pd.DataFrame(rows)
 
-# Drivers – 16 atributos dermocosméticos (perf x importância)
-DERMO_ATTRS = [
-    "Embalagem", "Preço justo", "Força de marca", "Qualidade", "Buzz",
-    "Variedade", "Ingredientes naturais", "Dermatologicamente testado",
-    "Textura", "Aroma", "Benefício anti-idade", "Hidratação",
-    "Disponibilidade", "Sustentabilidade", "Indicação de influenciadores", "Eficácia comprovada"
-]
-DRIVERS = pd.DataFrame({
-    "atributo": DERMO_ATTRS,
-    "performance": np.clip(np.random.normal(0.58, 0.12, len(DERMO_ATTRS)), 0.15, 0.95),
-    "importancia": np.clip(np.random.normal(0.55, 0.15, len(DERMO_ATTRS)), 0.10, 0.95)
-})
 
-# Fatores agregados (4) para o simulador
-AGG_FACTORS = {
-    "Produto": ["Qualidade", "Textura", "Aroma", "Hidratação", "Eficácia comprovada"],
-    "Marca": ["Força de marca", "Buzz", "Indicação de influenciadores", "Sustentabilidade", "Ingredientes naturais"],
-    "Preço & Oferta": ["Preço justo", "Variedade", "Disponibilidade"],
-    "Embalagem": ["Embalagem", "Dermatologicamente testado", "Benefício anti-idade"],
-}
+def gen_image_scores(banks: List[str], factors: Dict[str, List[str]]) -> pd.DataFrame:
+    rng = np.random.default_rng(SEED + 300)
+    rows = []
+    # leve vantagem para RedBank/GreyBank em Confiança & Segurança; PurpleBank em Digital; BlueBank em Valor
+    boosts = {
+        "RedBank": {"Confiança & Segurança": 0.03, "Experiência Digital": 0.00, "Valor & Tarifas": 0.00, "Atendimento & Suporte": 0.01, "Proximidade & Marca": 0.01},
+        "GreenBank": {"Confiança & Segurança": 0.00, "Experiência Digital": 0.01, "Valor & Tarifas": 0.01, "Atendimento & Suporte": 0.00, "Proximidade & Marca": 0.00},
+        "GreyBank": {"Confiança & Segurança": 0.02, "Experiência Digital": 0.00, "Valor & Tarifas": 0.00, "Atendimento & Suporte": 0.00, "Proximidade & Marca": 0.00},
+        "PurpleBank": {"Confiança & Segurança": 0.00, "Experiência Digital": 0.03, "Valor & Tarifas": 0.00, "Atendimento & Suporte": 0.00, "Proximidade & Marca": 0.01},
+        "BlueBank": {"Confiança & Segurança": 0.00, "Experiência Digital": 0.00, "Valor & Tarifas": 0.03, "Atendimento & Suporte": 0.01, "Proximidade & Marca": 0.00},
+    }
+    for brand in banks:
+        for f, attrs in factors.items():
+            base = float(np.clip(rng.normal(0.58, 0.09), 0.20, 0.95))
+            score = clamp(base + boosts.get(brand, {}).get(f, 0.0), 0.10, 0.97)
+            rows.append({"marca": brand, "fator": f, "score": score, "hover": ", ".join(attrs)})
+    return pd.DataFrame(rows)
 
-# Pesos fictícios para intenção de compra
-AGG_WEIGHTS = {"Produto": 0.38, "Marca": 0.27, "Preço & Oferta": 0.22, "Embalagem": 0.13}
-BASE_INTENCAO = 0.52
 
-# Offers – Van Westendorp (simulado)
-prices = np.linspace(20, 200, 60)
-# curvas cumulativas simuladas
-ppc = np.clip(np.linspace(0.02, 0.85, 60) + np.random.normal(0, 0.02, 60), 0, 1)  # too cheap
-pei = np.clip(np.linspace(0.01, 0.75, 60)[::-1] + np.random.normal(0, 0.02, 60), 0, 1)  # too expensive
-pip = np.clip(np.linspace(0.10, 0.90, 60) + np.random.normal(0, 0.02, 60), 0, 1)  # cheap
-pex = np.clip(np.linspace(0.05, 0.80, 60)[::-1] + np.random.normal(0, 0.02, 60), 0, 1)  # expensive
-VW = pd.DataFrame({"preco": prices, "muito_barato": ppc, "caro": pei, "barato": pip, "muito_caro": pex})
+def gen_equity(banks: List[str]) -> pd.DataFrame:
+    rng = np.random.default_rng(SEED + 400)
+    data = {"kpi": EQUITY_KPIS}
+    for brand in banks:
+        # pequenas variações por banco
+        shift = {
+            "RedBank": 0.03, "GreenBank": 0.00, "GreyBank": 0.01,
+            "PurpleBank": 0.01, "BlueBank": 0.00
+        }.get(brand, 0.0)
+        data[brand] = np.clip(rng.normal(0.58 + shift, 0.07, len(EQUITY_KPIS)), 0.20, 0.95)
+    return pd.DataFrame(data)
 
-# Experimento – Embalagem A vs B (fatores de imagem)
-PACK_FACTORS = ["Preço justo", "Qualidade", "Força de marca", "Premiumidade", "Intenção de compra", "Intenção pagar mais"]
-PACK = pd.DataFrame({
-    "fator": PACK_FACTORS,
-    "A": np.clip(np.random.normal(70, 10, len(PACK_FACTORS)), 30, 95),
-    "B": np.clip(np.random.normal(75, 10, len(PACK_FACTORS)), 30, 98),
-})
 
-# -----------------------------------------------------------------------------
-# SIDEBAR GLOBAL
-# -----------------------------------------------------------------------------
+def gen_priority_matrix(factors: Dict[str, List[str]]) -> pd.DataFrame:
+    rng = np.random.default_rng(SEED + 500)
+    rows = []
+    for f, attrs in factors.items():
+        for a in attrs:
+            # performance e importância com diferenças sutis por fator
+            perf = float(np.clip(rng.normal({
+                "Confiança & Segurança": 0.61,
+                "Experiência Digital": 0.57,
+                "Valor & Tarifas": 0.52,
+                "Atendimento & Suporte": 0.56,
+                "Proximidade & Marca": 0.55
+            }[f], 0.11), 0.10, 0.97))
+            imp = float(np.clip(rng.normal({
+                "Confiança & Segurança": 0.62,
+                "Experiência Digital": 0.60,
+                "Valor & Tarifas": 0.58,
+                "Atendimento & Suporte": 0.57,
+                "Proximidade & Marca": 0.55
+            }[f], 0.12), 0.10, 0.97))
+            rows.append({"fator": f, "atributo": a, "performance": perf, "importancia": imp})
+    return pd.DataFrame(rows)
+
+
+def gen_branding_impact() -> pd.DataFrame:
+    rng = np.random.default_rng(SEED + 600)
+    return pd.DataFrame({
+        "kpi": ["Intenção abrir conta", "Satisfação", "Intenção recomendar", "Principalidade"],
+        "participacao_branding": np.clip(rng.normal(0.68, 0.08, 4), 0.35, 0.90)
+    })
+
+
+# =============================================================================
+# Dados – construir base uma vez
+# =============================================================================
+DF_MEDIA = gen_media_habits(BANKS, MEDIA_CHANNELS)
+DF_FUNIL = gen_funnel(BANKS)
+DF_IMG = gen_image_scores(BANKS, IMAGE_FACTORS)
+DF_EQ = gen_equity(BANKS)
+DF_ATTR = gen_priority_matrix(IMAGE_FACTORS)
+BRANDING_IMPACT = gen_branding_impact()
+
+# =============================================================================
+# Sidebar – sem filtros (apenas header/nota)
+# =============================================================================
 with st.sidebar:
     st.title("Okiar – Demo")
-    st.caption("Frameworks de Consumer/Brand Insights, inspirados nos módulos BRAIN & MERIDIO.")
-    st.divider()
-    brand_a = st.selectbox("Marca A", options=BRANDS, index=0)
-    brand_b = st.selectbox("Marca B", options=[b for b in BRANDS if b != brand_a], index=0)
-    st.caption(":grey[Dados fictícios]")
+    st.caption("Frameworks de Consumer/Brand/EX • Dados 100% fictícios • v1.0")
+    st.markdown("<hr/>", unsafe_allow_html=True)
+    st.write(":grey[Use os filtros dentro de cada aba para ajustar as comparações.]")
 
-# Atualiza rótulos A e B se usuário trocar
-A_BRAND = brand_a
-B_BRAND = brand_b
-
-# -----------------------------------------------------------------------------
-# ABAS
-# -----------------------------------------------------------------------------
+# =============================================================================
+# Abas
+# =============================================================================
 TAB_BRAIN, TAB_MERIDIO, TAB_MMX, TAB_UXM, TAB_DOMUS, TAB_EBRAIN = st.tabs([
-    "BRAIN", "MERIDIO", "MMX (placeholder)", "UXM (placeholder)", "Domus (placeholder)", "e‑BRAIN (placeholder)"
+    "BRAIN", "MERIDIO", "MMX", "UXM", "Domus", "e-BRAIN"
 ])
 
-# =====================================
-# BRAIN – 5 módulos (capítulos)
-# =====================================
+# =============================================================================
+# BRAIN – Brand+Insights
+# =============================================================================
 with TAB_BRAIN:
     st.title("BRAIN – Brand+Insights")
     st.caption("Módulos: Comportamento • Memória • Imagem • Equity • Estratégia")
     st.divider()
 
+    # ---- Filtros desta aba ----
+    colA, colB, colC = st.columns([1, 1, 2])
+    with colA:
+        brand_a = st.selectbox("Marca A", options=BANKS, index=0)
+    with colB:
+        brand_b = st.selectbox("Marca B", options=[b for b in BANKS if b != brand_a], index=1)
+    with colC:
+        compare_mode = st.radio("Comparar canais de mídia", ["Geral", f"{brand_a} vs {brand_b}"], horizontal=True)
+
     # ---------------- Comportamento ----------------
-    st.subheader("Comportamento – Hábitos de mídia (exemplo)")
-    st.caption("Distribuição de canais de mídia entre marcas selecionadas.")
-    media = DF_MEDIA.melt(id_vars=["canal"], value_vars=["Geral"], var_name="amostra", value_name="share")
-    fig_m = px.bar(media, x="canal", y="share", text_auto=".0%", title="Hábitos de mídia – Geral")
-    fig_m.update_layout(height=360, margin=dict(l=10, r=10, t=50, b=10))
-    fig_m.update_yaxes(tickformat=",.0%")
-    st.plotly_chart(fig_m, use_container_width=True)
+    st.subheader("Comportamento – Hábitos de mídia")
+    if compare_mode == "Geral":
+        media = DF_MEDIA.melt(id_vars=["canal"], value_vars=["Geral"], var_name="amostra", value_name="share")
+        fig_m = px.bar(media, x="canal", y="share", text_auto=".0%", title="Hábitos de mídia – Geral")
+        fig_m.update_layout(height=360, margin=dict(l=10, r=10, t=50, b=10))
+        fig_m.update_yaxes(tickformat=",.0%")
+        st.plotly_chart(fig_m, use_container_width=True)
+    else:
+        media = DF_MEDIA.melt(id_vars=["canal"], value_vars=[brand_a, brand_b], var_name="marca", value_name="share")
+        fig_m = px.bar(media, x="canal", y="share", color="marca", barmode="group", text_auto=".0%", title="Hábitos de mídia – comparação")
+        fig_m.update_layout(height=360, margin=dict(l=10, r=10, t=50, b=10))
+        fig_m.update_yaxes(tickformat=",.0%")
+        st.plotly_chart(fig_m, use_container_width=True)
 
     st.divider()
 
@@ -347,7 +359,7 @@ with TAB_BRAIN:
     st.subheader("Memória – Top of mind & Funil de 5 marcas")
     st.caption("Top of mind, lembrança, familiaridade, consideração e preferência.")
     funnel_cur = DF_FUNIL.copy()
-    fig_f = bars_pct(funnel_cur, x="etapa", y="valor", color="marca", title="Funil de marcas – Exemplo")
+    fig_f = bars_pct(funnel_cur, x="etapa", y="valor", color="marca", title="Funil de marcas – Exemplo", height=360, barmode="group")
     st.plotly_chart(fig_f, use_container_width=True)
 
     st.divider()
@@ -355,9 +367,11 @@ with TAB_BRAIN:
     # ---------------- Imagem ----------------
     st.subheader("Imagem – Fatores de percepção (A vs B)")
     st.caption("Passe o mouse para ver os atributos dentro de cada fator.")
-    img = DF_IMG[DF_IMG["marca"].isin([A_BRAND, B_BRAND])].copy()
-    fig_img = px.bar(img, x="fator", y="score", color="marca", barmode="group", text_auto=".0%",
-                     hover_data={"hover": True, "fator": False, "score": ":.0%", "marca": False})
+    img = DF_IMG[DF_IMG["marca"].isin([brand_a, brand_b])].copy()
+    fig_img = px.bar(
+        img, x="fator", y="score", color="marca", barmode="group", text_auto=".0%",
+        title="Percepção por fator (A vs B)", custom_data=["hover"]
+    )
     fig_img.update_traces(hovertemplate="<b>%{x}</b><br>Score: %{y:.0%}<br>Atributos: %{customdata[0]}")
     fig_img.update_layout(height=360, margin=dict(l=10, r=10, t=50, b=10))
     fig_img.update_yaxes(tickformat=",.0%")
@@ -367,7 +381,7 @@ with TAB_BRAIN:
 
     # ---------------- Equity ----------------
     st.subheader("Equity – KPIs (A vs B)")
-    eq = DF_EQ.melt(id_vars=["kpi"], value_vars=[A_BRAND, B_BRAND], var_name="marca", value_name="score")
+    eq = DF_EQ.melt(id_vars=["kpi"], value_vars=[brand_a, brand_b], var_name="marca", value_name="score")
     fig_eq = bars_pct(eq, x="kpi", y="score", color="marca", title="KPIs de equity – demonstração", height=340)
     st.plotly_chart(fig_eq, use_container_width=True)
 
@@ -378,31 +392,34 @@ with TAB_BRAIN:
 
     # Matriz perf x importância
     df_pi = DF_ATTR.copy()
+    med_perf = df_pi["performance"].median()
+    med_imp = df_pi["importancia"].median()
     df_pi["zona"] = np.where(
-        (df_pi["performance"] < df_pi["performance"].median()) & (df_pi["importancia"] >= df_pi["importancia"].median()),
-        "Urgência", np.where(
-            (df_pi["performance"] >= df_pi["performance"].median()) & (df_pi["importancia"] >= df_pi["importancia"].median()),
-            "Proteção", "Acompanhamento"
-        )
+        (df_pi["performance"] < med_perf) & (df_pi["importancia"] >= med_imp),
+        "Urgência",
+        np.where((df_pi["performance"] >= med_perf) & (df_pi["importancia"] >= med_imp), "Proteger", "Acompanhar")
     )
-    fig_mat = px.scatter(df_pi, x="performance", y="importancia", color="zona", text="atributo",
-                         hover_data=["fator"], title="Matriz de Priorização (Performance x Importância)")
+    fig_mat = px.scatter(
+        df_pi, x="performance", y="importancia", color="zona", text="atributo",
+        hover_data=["fator"], title="Matriz de Priorização (Performance × Importância)", size_max=18
+    )
     fig_mat.update_traces(textposition="top center")
     fig_mat.update_layout(height=420, margin=dict(l=10, r=10, t=50, b=10))
     fig_mat.update_xaxes(tickformat=",.0%")
     fig_mat.update_yaxes(tickformat=",.0%")
     st.plotly_chart(fig_mat, use_container_width=True)
 
-    # Participação de Branding (R²)
+    # Participação de Branding (R² simulado)
     st.markdown("<div class='block-title'>Participação de Branding no resultado</div>", unsafe_allow_html=True)
     fig_r2 = px.bar(BRANDING_IMPACT, x="kpi", y="participacao_branding", text_auto=".0%", title="")
     fig_r2.update_layout(height=320, margin=dict(l=10, r=10, t=20, b=10))
     fig_r2.update_yaxes(tickformat=",.0%")
     st.plotly_chart(fig_r2, use_container_width=True)
 
-# =====================================
-# MERIDIO – Core + Personas + Drivers + Jornada
-# =====================================
+
+# =============================================================================
+# MERIDIO – Consumer Behavior
+# =============================================================================
 with TAB_MERIDIO:
     st.title("MERIDIO – Consumer Behavior")
     st.caption("Módulos: Comportamento • Personas • Drivers • Jornada")
@@ -420,6 +437,45 @@ with TAB_MERIDIO:
 
     # ---------------- Personas ----------------
     st.subheader("Personas – por faixa de renda")
+    PERSONA_GROUPS = {
+        "A": ["Os Apressados", "Os Visionários", "Os Refinados"],
+        "B": ["Os Organizados", "Os Astutos", "Os Exploradores"],
+        "C": ["Os Práticos", "Os Descolados", "Os Cautelosos"],
+    }
+    PERSONA_DESC = {
+        "Os Apressados": "Valorizam rapidez e conveniência; baixa tolerância a fricção.",
+        "Os Visionários": "Buscam inovação e status; adotam novidades cedo.",
+        "Os Refinados": "Preferem qualidade premium e atendimento diferenciado.",
+        "Os Organizados": "Planejam finanças; respondem bem a programas de fidelidade.",
+        "Os Astutos": "Caçadores de valor; sensíveis a preço e benefícios.",
+        "Os Exploradores": "Experimentam marcas; propensos a cross-sell.",
+        "Os Práticos": "Objetivos e sensíveis a preço; pouca paciência para burocracia.",
+        "Os Descolados": "Digitais, influenciados por social e creators.",
+        "Os Cautelosos": "Aversos a risco; exigem provas sociais e garantias.",
+    }
+
+    # Hábitos de mídia / frequência / ticket variando por persona
+    BASE_MEDIA = DF_MEDIA.set_index("canal")["Geral"].to_dict()
+
+    def persona_adjustment(name: str, base: Dict[str, float]) -> Dict[str, float]:
+        adj = {k: v for k, v in base.items()}
+        if "Descolados" in name or "Exploradores" in name:
+            for k in ["TikTok", "Instagram", "YouTube"]:
+                adj[k] = min(adj[k]*1.35, 0.5)
+        if "Cautelosos" in name:
+            for k in ["TV Aberta", "Portais", "Google"]:
+                adj[k] = min(adj[k]*1.25, 0.6)
+        if "Refinados" in name:
+            for k in ["TV Paga", "Out of Home", "Instagram"]:
+                adj[k] = min(adj[k]*1.20, 0.55)
+        s = sum(adj.values())
+        return {k: v/s for k, v in adj.items()}
+
+    PERSONAS = sum(PERSONA_GROUPS.values(), [])
+    PERSONA_MEDIA = {p: persona_adjustment(p, BASE_MEDIA) for p in PERSONAS}
+    PERSONA_FREQ = {p: float(np.clip(np.random.normal(2.6, 0.6), 0.5, 5.0)) for p in PERSONAS}  # vezes/mês
+    PERSONA_TICKET = {p: float(np.clip(np.random.normal(180, 60), 40, 600)) for p in PERSONAS}  # R$
+
     colA, colB = st.columns((1,1))
     with colA:
         faixa = st.radio("Selecione uma faixa", options=["Todas", "A", "B", "C"], horizontal=True)
@@ -467,12 +523,24 @@ with TAB_MERIDIO:
 
     # ---------------- Drivers ----------------
     st.subheader("Drivers – Compra • Offers • Experimento")
-    dtab1, dtab2, dtab3 = st.tabs(["Drivers de Compra", "Offers", "Experimento"])
+    dtab1, dtab2, dtab3 = st.tabs(["Drivers de Compra", "Offers (Conjoint & Preço)", "Experimento"])
 
+    # --- Drivers de compra (dermocosméticos fictício) + simulador de intenção ---
     with dtab1:
-        st.markdown("<div class='block-title'>Matriz de drivers (dermocosméticos)</div>", unsafe_allow_html=True)
+        DERMO_ATTRS = [
+            "Embalagem", "Preço justo", "Força de marca", "Qualidade", "Buzz",
+            "Variedade", "Ingredientes naturais", "Dermatologicamente testado",
+            "Textura", "Aroma", "Benefício anti-idade", "Hidratação",
+            "Disponibilidade", "Sustentabilidade", "Indicação de influenciadores", "Eficácia comprovada"
+        ]
+        DRIVERS = pd.DataFrame({
+            "atributo": DERMO_ATTRS,
+            "performance": np.clip(np.random.normal(0.58, 0.12, len(DERMO_ATTRS)), 0.15, 0.95),
+            "importancia": np.clip(np.random.normal(0.55, 0.15, len(DERMO_ATTRS)), 0.10, 0.95)
+        })
+
         fig_d1 = px.scatter(DRIVERS, x="performance", y="importancia", text="atributo", color="importancia",
-                            color_continuous_scale="Tealgrn")
+                            color_continuous_scale="Tealgrn", title="Matriz de drivers (dermocosméticos)")
         fig_d1.update_traces(textposition="top center")
         fig_d1.update_layout(height=420, margin=dict(l=10, r=10, t=50, b=10), coloraxis_colorbar_title="Importância")
         fig_d1.update_xaxes(tickformat=",.0%")
@@ -480,48 +548,115 @@ with TAB_MERIDIO:
         st.plotly_chart(fig_d1, use_container_width=True)
 
         st.markdown("<div class='block-title'>Simulador de intenção de compra (4 fatores agregados)</div>", unsafe_allow_html=True)
+        # Fatores agregados (4) para o simulador
+        AGG_FACTORS = {
+            "Produto": ["Qualidade", "Textura", "Aroma", "Hidratação", "Eficácia comprovada"],
+            "Marca": ["Força de marca", "Buzz", "Indicação de influenciadores", "Sustentabilidade", "Ingredientes naturais"],
+            "Preço & Oferta": ["Preço justo", "Variedade", "Disponibilidade"],
+            "Embalagem": ["Embalagem", "Dermatologicamente testado", "Benefício anti-idade"],
+        }
+        AGG_WEIGHTS = {"Produto": 0.40, "Marca": 0.28, "Preço & Oferta": 0.22, "Embalagem": 0.10}
+        BASE_INTENCAO = 0.52
+
         sc1, sc2 = st.columns((2,1))
         with sc1:
             sliders = {}
-            hover_text = {
-                k: ", ".join(v) for k, v in AGG_FACTORS.items()
-            }
+            hover_text = {k: ", ".join(v) for k, v in AGG_FACTORS.items()}
             for k in AGG_FACTORS.keys():
-                sliders[k] = st.slider(f"{k}", min_value=-20, max_value=20, value=0, step=1, help=f"Inclui: {hover_text[k]}")
+                sliders[k] = st.slider(f"{k}", min_value=-30, max_value=30, value=0, step=1, help=f"Inclui: {hover_text[k]}")
         with sc2:
-            # Cálculo simples: intenção = base + soma(delta% * peso)
-            delta_perc = {k: sliders[k]/100 for k in sliders}
-            inten = BASE_INTENCAO * (1 + sum(delta_perc[k]*AGG_WEIGHTS[k] for k in AGG_WEIGHTS))
-            inten = float(np.clip(inten, 0.01, 0.99))
+            # Variação não-linear + pesos (efeitos mais fortes)
+            delta_perc = {k: sliders[k]/100 for k in sliders}  # [-0.3, 0.3]
+            # Escala maior para tornar efeito perceptível (ex.: 1.2)
+            efeito = weighted_sum(delta_perc, AGG_WEIGHTS, scale=1.2)
+            inten = clamp(BASE_INTENCAO * (1 + efeito), 0.01, 0.99)
             # Tabela de impactos
-            imp_rows = [{"Fator": k, "% Δ atributo": f"{delta_perc[k]*100:+.0f}%", "% Δ intenção": f"{delta_perc[k]*AGG_WEIGHTS[k]*100:+.1f}%"} for k in sliders]
+            imp_rows = [{"Fator": k, "% Δ fator": f"{delta_perc[k]*100:+.0f}%", "Peso": f"{AGG_WEIGHTS[k]*100:.0f}%"} for k in sliders]
             df_imp = pd.DataFrame(imp_rows)
             st.dataframe(df_imp, use_container_width=True, height=180)
             st.markdown("<div class='block-title'>Intenção de compra estimada</div>", unsafe_allow_html=True)
             metric_card("Intenção", pct(inten))
 
+    # --- Offers: Conjoint (link) + Van Westendorp (grande, com faixa ideal) ---
     with dtab2:
-        st.markdown("<div class='block-title'>Escolha uma opção</div>", unsafe_allow_html=True)
-        cco, cpr = st.columns((1,1))
-        with cco:
-            st.markdown("**Conjoint**")
-            st.link_button("Abrir simulador de Conjoint", "https://simuladorconjointtdah-g3tyutubdwrqowizlogkuc.streamlit.app")
-        with cpr:
-            st.markdown("**Price – Van Westendorp**")
-            fig_vw = go.Figure()
-            fig_vw.add_trace(go.Scatter(x=VW["preco"], y=VW["muito_barato"], name="Muito barato"))
-            fig_vw.add_trace(go.Scatter(x=VW["preco"], y=VW["barato"], name="Barato"))
-            fig_vw.add_trace(go.Scatter(x=VW["preco"], y=VW["caro"], name="Caro"))
-            fig_vw.add_trace(go.Scatter(x=VW["preco"], y=VW["muito_caro"], name="Muito caro"))
-            fig_vw.update_layout(title="Curvas de sensibilidade de preço (VW)", xaxis_title="Preço", yaxis_title="% acumulado",
-                                 height=360, margin=dict(l=10, r=10, t=50, b=10))
-            st.plotly_chart(fig_vw, use_container_width=True)
-            st.caption("Faixa ideal de preço: região entre as interseções Barato×Caro e Muito barato×Muito caro (estimada no gráfico).")
+        st.markdown("**Conjoint**")
+        st.link_button("Abrir simulador de Conjoint", "https://simuladorconjointtdah-g3tyutubdwrqowizlogkuc.streamlit.app")
 
+        # Van Westendorp maior e com cálculo do range ideal
+        st.markdown("**Price – Van Westendorp**")
+        prices = np.linspace(20, 200, 60)
+
+        rng = np.random.default_rng(SEED + 700)
+        muito_barato = np.clip(np.linspace(0.02, 0.85, 60) + rng.normal(0, 0.02, 60), 0, 1)
+        barato =      np.clip(np.linspace(0.10, 0.90, 60) + rng.normal(0, 0.02, 60), 0, 1)
+        caro =        np.clip(np.linspace(0.01, 0.75, 60)[::-1] + rng.normal(0, 0.02, 60), 0, 1)
+        muito_caro =  np.clip(np.linspace(0.05, 0.80, 60)[::-1] + rng.normal(0, 0.02, 60), 0, 1)
+
+        def _intersect_x(x, y1, y2) -> Optional[float]:
+            """Retorna ponto de interseção aproximado entre y1 e y2 (por x), se houver."""
+            diff = y1 - y2
+            sign = np.sign(diff)
+            # procura mudança de sinal
+            idx = np.where(np.diff(sign) != 0)[0]
+            if len(idx) == 0:
+                return None
+            i = idx[0]
+            # interpolação linear
+            x0, x1 = x[i], x[i+1]
+            y0, y1v = diff[i], diff[i+1]
+            if y1v == y0:
+                return float((x0 + x1)/2)
+            t = -y0 / (y1v - y0)
+            return float(x0 + t*(x1 - x0))
+
+        # Interseções típicas: Barato × Caro (Ponto de marginal barato/caro)
+        x_bc = _intersect_x(prices, barato, caro)
+        # Muito barato × Muito caro (Range exterior)
+        x_mbmc = _intersect_x(prices, muito_barato, muito_caro)
+
+        # Faixa ideal (se ambas interseções existirem): entre x_mbmc (inferior) e x_bc (superior), ordene
+        faixa = None
+        if x_bc and x_mbmc:
+            x_low, x_high = sorted([x_mbmc, x_bc])
+            faixa = (x_low, x_high)
+
+        fig_vw = go.Figure()
+        fig_vw.add_trace(go.Scatter(x=prices, y=muito_barato, name="Muito barato"))
+        fig_vw.add_trace(go.Scatter(x=prices, y=barato, name="Barato"))
+        fig_vw.add_trace(go.Scatter(x=prices, y=caro, name="Caro"))
+        fig_vw.add_trace(go.Scatter(x=prices, y=muito_caro, name="Muito caro"))
+
+        if faixa:
+            # Sombreamento da faixa ideal
+            fig_vw.add_vrect(x0=faixa[0], x1=faixa[1], fillcolor="LightGreen", opacity=0.3, layer="below", line_width=0)
+            fig_vw.add_vline(x=faixa[0], line=dict(color="Green", dash="dash"), annotation_text=f"Limite inf ~ R$ {faixa[0]:.0f}", annotation_position="top left")
+            fig_vw.add_vline(x=faixa[1], line=dict(color="Green", dash="dash"), annotation_text=f"Limite sup ~ R$ {faixa[1]:.0f}", annotation_position="top right")
+
+        fig_vw.update_layout(
+            title="Curvas de sensibilidade de preço (Van Westendorp)",
+            xaxis_title="Preço (R$)",
+            yaxis_title="% acumulado",
+            height=480,  # maior
+            margin=dict(l=10, r=10, t=50, b=10)
+        )
+        st.plotly_chart(fig_vw, use_container_width=True)
+
+        if faixa:
+            st.success(f"Faixa ideal (estimada): **R$ {faixa[0]:.0f} – R$ {faixa[1]:.0f}**.")
+        else:
+            st.warning("Não foi possível identificar uma faixa ideal clara com os dados simulados.")
+
+    # --- Experimento: A/B de embalagem (dermocosméticos) ---
     with dtab3:
         st.markdown("<div class='block-title'>Teste A/B – Embalagens</div>", unsafe_allow_html=True)
-        pack_m = PACK.melt(id_vars=["fator"], value_vars=["A", "B"], var_name="embalagem", value_name="score")
-        fig_pack = px.bar(pack_m, x="fator", y="score", color="embalagem", barmode="group", text_auto=True,
+        PACK_FACTORS = ["Preço justo", "Qualidade", "Força de marca", "Premiumidade", "Intenção de compra", "Intenção pagar mais"]
+        PACK = pd.DataFrame({
+            "fator": PACK_FACTORS,
+            "A": np.clip(np.random.normal(70, 10, len(PACK_FACTORS)), 30, 95),
+            "B": np.clip(np.random.normal(75, 10, len(PACK_FACTORS)), 30, 98),
+        })
+        pack_m = PACK.melt(id_vars=["fator"], value_vars=["A", "B"], var_name="Emb.", value_name="score")
+        fig_pack = px.bar(pack_m, x="fator", y="score", color="Emb.", barmode="group", text_auto=True,
                           title="Desempenho por fator (A vs B)")
         fig_pack.update_layout(height=360, margin=dict(l=10, r=10, t=50, b=10))
         st.plotly_chart(fig_pack, use_container_width=True)
@@ -529,8 +664,8 @@ with TAB_MERIDIO:
     st.divider()
 
     # ---------------- Jornada ----------------
-    st.subheader("Jornada – Exemplo (macro‑etapas)")
-    steps = ["Descoberta", "Pesquisa", "Avaliação", "Compra", "Pós‑compra"]
+    st.subheader("Jornada – Exemplo (macro-etapas)")
+    steps = ["Descoberta", "Pesquisa", "Avaliação", "Compra", "Pós-compra"]
     sat = np.clip(np.random.normal(7, 1.2, len(steps)), 4, 10)  # CSAT 0–10
     drop = np.clip(np.random.normal(0.12, 0.05, len(steps)), 0.02, 0.35)
     df_j = pd.DataFrame({"etapa": steps, "CSAT": sat, "Drop-off": drop})
@@ -545,16 +680,15 @@ with TAB_MERIDIO:
         fig_j2.update_yaxes(tickformat=",.0%")
         st.plotly_chart(fig_j2, use_container_width=True)
 
-# =====================================
+# =============================================================================
 # MMX – Customer Experience (Seguros)
-# =====================================
+# =============================================================================
 with TAB_MMX:
     st.title("MMX – Customer Experience (Seguros)")
-    st.caption("Blocos: Overview • Evolução • Priorização • Mini simulador")
+    st.caption("Overview • Evolução • Priorização • Simulador")
     st.divider()
 
-    # ---------- Dados fictícios ----------
-    np.random.seed(17)
+    np.random.seed(SEED + 17)
     clientes = ["Cliente A", "Cliente B"]
     fatores_mmx = {
         "Atendimento": ["Cordialidade", "Agilidade", "Resolução no 1º contato"],
@@ -564,40 +698,43 @@ with TAB_MMX:
         "Suporte/Resolução": ["Pós-sinistro", "Prazo de retorno", "Acompanhamento do caso"],
     }
 
-    # Score 0-1 por atributo (média por fator depois)
     def mock_attr_scores(base_shift=0.0):
         rows = []
         for fator, attrs in fatores_mmx.items():
             for a in attrs:
                 score = float(np.clip(np.random.normal(0.62 + base_shift, 0.10), 0.25, 0.95))
-                importancia = float(np.clip(np.random.normal(0.58, 0.12), 0.10, 0.95))
+                importancia = float(np.clip(np.random.normal(0.60, 0.10), 0.15, 0.95))
                 rows.append({"fator": fator, "atributo": a, "score": score, "importancia": importancia})
         return pd.DataFrame(rows)
 
-    mmx_A = mock_attr_scores(base_shift=0.03)   # A levemente melhor
-    mmx_B = mock_attr_scores(base_shift=-0.02)  # B levemente pior
+    mmx_A = mock_attr_scores(base_shift=0.03)
+    mmx_B = mock_attr_scores(base_shift=-0.02)
 
-    # ---------- 1) Overview ----------
     st.subheader("Overview – Experiência por fator (Cliente A vs Cliente B)")
-    fa = mmx_A.groupby("fator", as_index=False)["score"].mean().rename(columns={"score": "A"})
-    fb = mmx_B.groupby("fator", as_index=False)["score"].mean().rename(columns={"score": "B"})
+    fa = mmx_A.groupby("fator", as_index=False)["score"].mean().rename(columns={"score": "Cliente A"})
+    fb = mmx_B.groupby("fator", as_index=False)["score"].mean().rename(columns={"score": "Cliente B"})
     fcmp = fa.merge(fb, on="fator")
-    fcmp_m = fcmp.melt(id_vars=["fator"], value_vars=["A", "B"], var_name="cliente", value_name="score")
-
-    fig_ov = px.bar(fcmp_m, x="fator", y="score", color="cliente", barmode="group",
-                    text_auto=".0%", title="Média de experiência por fator")
-    fig_ov.update_layout(height=340, margin=dict(l=10, r=10, t=50, b=10))
+    fcmp_m = fcmp.melt(id_vars=["fator"], var_name="cliente", value_name="score")
+    fig_ov = px.bar(fcmp_m, x="fator", y="score", color="cliente", barmode="group", text_auto=".0%")
+    fig_ov.update_layout(height=340, margin=dict(l=10, r=10, t=50, b=10), title="Média de experiência por fator")
     fig_ov.update_yaxes(tickformat=",.0%")
     st.plotly_chart(fig_ov, use_container_width=True)
 
-    # ---------- 2) Evolução ----------
+    st.divider()
+
     st.subheader("Evolução – Satisfação e NPS (últimos 12 meses)")
     meses = pd.date_range(end=pd.Timestamp.today().normalize(), periods=12, freq="MS")
+    base_sat = np.linspace(0.62, 0.70, 12)
+    base_nps = np.linspace(0.28, 0.40, 12)
+    ruido_sat_A = np.random.normal(0, 0.01, 12)
+    ruido_sat_B = np.random.normal(0, 0.01, 12)
+    ruido_nps_A = np.random.normal(0, 0.02, 12)
+    ruido_nps_B = np.random.normal(0, 0.02, 12)
     evo = pd.DataFrame({
         "mes": list(meses)*2,
-        "cliente": np.repeat(clientes, len(meses)),
-        "satisfacao": np.clip(np.linspace(0.62, 0.70, 12) + np.random.normal(0, 0.01, 24) + np.where(np.repeat(clientes, 12)=="Cliente A", 0.02, -0.01), 0.30, 0.95),
-        "nps": np.clip(np.linspace(0.28, 0.40, 12) + np.random.normal(0, 0.02, 24) + np.where(np.repeat(clientes, 12)=="Cliente A", 0.05, -0.02), -0.2, 0.9),
+        "cliente": ["Cliente A"]*12 + ["Cliente B"]*12,
+        "satisfacao": list(np.clip(base_sat + 0.02 + ruido_sat_A, 0.30, 0.95)) + list(np.clip(base_sat - 0.01 + ruido_sat_B, 0.30, 0.95)),
+        "nps": list(np.clip(base_nps + 0.05 + ruido_nps_A, -0.20, 0.95)) + list(np.clip(base_nps - 0.02 + ruido_nps_B, -0.20, 0.95)),
     })
     c1, c2 = st.columns(2)
     with c1:
@@ -611,72 +748,64 @@ with TAB_MMX:
         fig_n.update_yaxes(tickformat=",.0%")
         st.plotly_chart(fig_n, use_container_width=True)
 
-    # ---------- 3) Priorização ----------
+    st.divider()
+
     st.subheader("Priorização – Matriz Performance × Importância (15 atributos)")
-    pri = pd.concat([mmx_A.assign(cliente="A"), mmx_B.assign(cliente="B")], ignore_index=True)
-    # Usaremos os 15 atributos (5 fatores x 3 atributos)
+    pri = pd.concat([mmx_A.assign(cliente="Cliente A"), mmx_B.assign(cliente="Cliente B")], ignore_index=True)
+    med_perf = pri["score"].median()
+    med_imp = pri["importancia"].median()
     pri["zona"] = np.where(
-        (pri["score"] < pri["score"].median()) & (pri["importancia"] >= pri["importancia"].median()), "Urgência",
-        np.where((pri["score"] >= pri["score"].median()) & (pri["importancia"] >= pri["importancia"].median()), "Proteger", "Acompanhar")
+        (pri["score"] < med_perf) & (pri["importancia"] >= med_imp), "Urgência",
+        np.where((pri["score"] >= med_perf) & (pri["importancia"] >= med_imp), "Proteger", "Acompanhar")
     )
     fig_pri = px.scatter(pri, x="score", y="importancia", color="zona", symbol="cliente", text="atributo",
-                         hover_data=["fator"], title="Atributos prioritários por cliente")
+                         hover_data=["fator"], title="Atributos prioritários por cliente", size_max=18)
     fig_pri.update_traces(textposition="top center")
     fig_pri.update_layout(height=420, margin=dict(l=10, r=10, t=50, b=10))
     fig_pri.update_xaxes(title="Performance", tickformat=",.0%")
     fig_pri.update_yaxes(title="Importância", tickformat=",.0%")
     st.plotly_chart(fig_pri, use_container_width=True)
 
-    # ---------- 4) Mini simulador ----------
-    st.subheader("Mini simulador – Impacto dos atributos em Satisfação → KPIs")
-    st.caption("Ajuste os fatores (±20%). Satisfação afeta: NPS (↑), Churn (↓), Reclamações (↓), Cross-sell (↑).")
+    st.divider()
 
-    # simularemos em nível de fator (5 sliders)
+    st.subheader("Simulador – Impacto dos fatores em Satisfação → KPIs")
+    st.caption("Ajuste os 5 fatores (±30%). Satisfação impacta: NPS (↑), Churn (↓), Reclamações (↓), Cross-sell (↑).")
     pesos_fator = {
         "Atendimento": 0.28,
-        "Canais Digitais": 0.20,
+        "Canais Digitais": 0.22,
         "Produto/Serviços": 0.24,
-        "Preço/Valor": 0.16,
+        "Preço/Valor": 0.14,
         "Suporte/Resolução": 0.12,
     }
     colL, colR = st.columns((2,1))
     with colL:
-        deltas = {}
-        for f in fatores_mmx.keys():
-            deltas[f] = st.slider(f"{f}", min_value=-20, max_value=20, value=0, step=1, help="Variação percentual do fator")
-
-        base_sat = 0.66
-        sat = base_sat * (1 + sum((deltas[f]/100.0)*pesos_fator[f] for f in pesos_fator))
-        sat = float(np.clip(sat, 0.01, 0.99))
-
-        # Mapeamentos simples (exemplo)
-        nps = np.clip(0.2 + 0.9*sat, 0.0, 0.99)            # ↑
-        churn = np.clip(0.25 - 0.25*sat, 0.01, 0.40)       # ↓
-        recl = np.clip(0.30 - 0.35*sat, 0.01, 0.35)        # ↓
-        cross = np.clip(0.10 + 0.8*sat, 0.02, 0.95)        # ↑
-
+        deltas = {f: st.slider(f, -30, 30, 0, 1) for f in pesos_fator}
+        delta_norm = {k: v/100 for k, v in deltas.items()}
+        efeito = weighted_sum(delta_norm, pesos_fator, scale=1.35)
+        sat = clamp(0.66 * (1 + efeito), 0.01, 0.99)
+        nps = clamp(0.10 + 1.05*sat, 0.00, 0.99)
+        churn = clamp(0.30 - 0.40*sat, 0.02, 0.45)
+        recl = clamp(0.32 - 0.45*sat, 0.01, 0.40)
+        cross = clamp(0.08 + 0.90*sat, 0.02, 0.95)
     with colR:
         metric_card("Satisfação (estimada)", f"{sat*100:.1f}%")
         metric_card("NPS (estimado)", f"{nps*100:.1f}%")
         metric_card("Churn (estimado)", f"{churn*100:.1f}%")
         metric_card("Reclamações (estimado)", f"{recl*100:.1f}%")
         metric_card("Cross-sell (estimado)", f"{cross*100:.1f}%")
-
     st.markdown("**Impactos por fator**")
     imp_rows = [{"Fator": f, "% Δ fator": f"{deltas[f]:+.0f}%", "Peso": f"{pesos_fator[f]*100:.0f}%"} for f in pesos_fator]
     st.dataframe(pd.DataFrame(imp_rows), use_container_width=True, height=180)
 
-
-# =====================================
+# =============================================================================
 # UXM – Digital Experience
-# =====================================
+# =============================================================================
 with TAB_UXM:
     st.title("UXM – Digital Experience")
-    st.caption("Blocos: Overview • Evolução • Priorização • Simulador (3 colunas)")
+    st.caption("Overview • Evolução • Priorização • Simulador")
     st.divider()
 
-    # ---------- Dados fictícios ----------
-    np.random.seed(23)
+    np.random.seed(SEED + 23)
     big_five = {
         "Findability": ["Busca interna", "Arquitetura de informação", "Navegação"],
         "Usability": ["Fluxos claros", "Aprendizado rápido", "Erros recuperáveis"],
@@ -690,55 +819,61 @@ with TAB_UXM:
         for f, attrs in big_five.items():
             for a in attrs:
                 s = float(np.clip(np.random.normal(0.60+shift, 0.10), 0.20, 0.95))
-                w = float(np.clip(np.random.normal(0.56, 0.12), 0.10, 0.95))
+                w = float(np.clip(np.random.normal(0.58, 0.10), 0.10, 0.95))
                 rows.append({"fator": f, "atributo": a, "score": s, "importancia": w})
         return pd.DataFrame(rows)
 
     uxm_A = mock_ux_scores(shift=0.03)
     uxm_B = mock_ux_scores(shift=-0.02)
 
-    # ---------- 1) Overview ----------
     st.subheader("Overview – Big Five de UX (A vs B)")
-    fa = uxm_A.groupby("fator", as_index=False)["score"].mean().rename(columns={"score": "A"})
-    fb = uxm_B.groupby("fator", as_index=False)["score"].mean().rename(columns={"score": "B"})
-    fcmp = fa.merge(fb, on="fator").melt(id_vars=["fator"], value_vars=["A","B"], var_name="marca", value_name="score")
-    fig_ux = px.bar(fcmp, x="fator", y="score", color="marca", barmode="group", text_auto=".0%", title="Scores por fator")
-    fig_ux.update_layout(height=340, margin=dict(l=10, r=10, t=50, b=10))
+    fa = uxm_A.groupby("fator", as_index=False)["score"].mean().rename(columns={"score": "Marca A"})
+    fb = uxm_B.groupby("fator", as_index=False)["score"].mean().rename(columns={"score": "Marca B"})
+    fcmp = fa.merge(fb, on="fator").melt(id_vars=["fator"], var_name="marca", value_name="score")
+    fig_ux = px.bar(fcmp, x="fator", y="score", color="marca", barmode="group", text_auto=".0%")
+    fig_ux.update_layout(height=340, margin=dict(l=10, r=10, t=50, b=10), title="Scores por fator")
     fig_ux.update_yaxes(tickformat=",.0%")
     st.plotly_chart(fig_ux, use_container_width=True)
 
-    # ---------- 2) Evolução ----------
+    st.divider()
+
     st.subheader("Evolução – UX Equity (últimos 12 meses)")
     meses = pd.date_range(end=pd.Timestamp.today().normalize(), periods=12, freq="MS")
+    base_uxe = np.linspace(0.55, 0.68, 12)
+    ruido_A = np.random.normal(0, 0.01, 12)
+    ruido_B = np.random.normal(0, 0.01, 12)
     evo = pd.DataFrame({
         "mes": list(meses)*2,
-        "marca": np.repeat(["Marca A","Marca B"], len(meses)),
-        "ux_equity": np.clip(np.linspace(0.55, 0.68, 12) + np.random.normal(0, 0.01, 24) + np.where(np.repeat(["Marca A","Marca B"], 12)=="Marca A", 0.02, -0.01), 0.25, 0.95)
+        "marca": ["Marca A"]*12 + ["Marca B"]*12,
+        "ux_equity": list(np.clip(base_uxe + 0.02 + ruido_A, 0.25, 0.95)) + list(np.clip(base_uxe - 0.01 + ruido_B, 0.25, 0.95))
     })
     fig_uxe = px.line(evo, x="mes", y="ux_equity", color="marca", markers=True, title="UX Equity (normalizado)")
     fig_uxe.update_layout(height=320, margin=dict(l=10, r=10, t=50, b=10))
     fig_uxe.update_yaxes(tickformat=",.0%")
     st.plotly_chart(fig_uxe, use_container_width=True)
 
-    # ---------- 3) Priorização ----------
+    st.divider()
+
     st.subheader("Priorização – Performance × Importância (Big Five detalhado)")
     pri = pd.concat([uxm_A.assign(marca="A"), uxm_B.assign(marca="B")], ignore_index=True)
+    med_perf = pri["score"].median()
+    med_imp = pri["importancia"].median()
     pri["zona"] = np.where(
-        (pri["score"] < pri["score"].median()) & (pri["importancia"] >= pri["importancia"].median()), "Urgência",
-        np.where((pri["score"] >= pri["score"].median()) & (pri["importancia"] >= pri["importancia"].median()), "Proteger", "Acompanhar")
+        (pri["score"] < med_perf) & (pri["importancia"] >= med_imp), "Urgência",
+        np.where((pri["score"] >= med_perf) & (pri["importancia"] >= med_imp), "Proteger", "Acompanhar")
     )
     fig_pu = px.scatter(pri, x="score", y="importancia", color="zona", symbol="marca", text="atributo",
-                        hover_data=["fator"], title="Detalhamento de atributos (Big Five)")
+                        hover_data=["fator"], title="Detalhamento de atributos (Big Five)", size_max=18)
     fig_pu.update_traces(textposition="top center")
     fig_pu.update_layout(height=420, margin=dict(l=10, r=10, t=50, b=10))
     fig_pu.update_xaxes(title="Performance", tickformat=",.0%")
     fig_pu.update_yaxes(title="Importância", tickformat=",.0%")
     st.plotly_chart(fig_pu, use_container_width=True)
 
-    # ---------- 4) Simulador (3 colunas) ----------
-    st.subheader("Simulador – Big Five → UX Equity → Métricas de negócio")
-    st.caption("Ajuste os 5 fatores (±20%). UX Equity impacta: Conversão (↑), Retenção (↑), Suporte (↓).")
+    st.divider()
 
+    st.subheader("Simulador – Big Five → UX Equity → Métricas de negócio")
+    st.caption("Ajuste os 5 fatores (±30%). UX Equity impacta: Conversão (↑), Retenção (↑), Suporte (↓).")
     pesos = {
         "Findability": 0.22,
         "Usability": 0.26,
@@ -747,30 +882,23 @@ with TAB_UXM:
         "Accessibility": 0.14,
     }
     base_ux = 0.60
-
     col1, col2, col3 = st.columns(3)
     with col1:
-        d = {}
-        for f in pesos.keys():
-            d[f] = st.slider(f, min_value=-20, max_value=20, value=0, step=1)
-        ux_equity = base_ux * (1 + sum((d[f]/100.0)*pesos[f] for f in pesos))
-        ux_equity = float(np.clip(ux_equity, 0.01, 0.99))
+        d = {f: st.slider(f, -30, 30, 0, 1) for f in pesos}
+        d_norm = {k: v/100 for k, v in d.items()}
+        efeito = weighted_sum(d_norm, pesos, scale=1.30)
+        ux_equity = clamp(base_ux * (1 + efeito), 0.01, 0.99)
         metric_card("UX Equity (estimado)", f"{ux_equity*100:.1f}%")
-
     with col2:
-        # Regras simples de negócio
-        conversao = np.clip(0.08 + 0.8*ux_equity, 0.01, 0.95)   # ↑
-        retencao = np.clip(0.70 + 0.3*ux_equity, 0.30, 0.99)    # ↑
-        suporte = np.clip(0.35 - 0.4*ux_equity, 0.01, 0.40)     # ↓ (chamados/contatos)
+        conversao = clamp(0.06 + 1.05*ux_equity, 0.01, 0.98)
+        retencao = clamp(0.60 + 0.45*ux_equity, 0.20, 0.99)
+        suporte = clamp(0.40 - 0.55*ux_equity, 0.01, 0.50)
         metric_card("Conversão (estimada)", f"{conversao*100:.1f}%")
         metric_card("Retenção (estimada)", f"{retencao*100:.1f}%")
         metric_card("Chamados de suporte (↓)", f"{suporte*100:.1f}%")
-
     with col3:
-        # Tabela de impactos por fator
         imp_rows = [{"Fator": f, "% Δ fator": f"{d[f]:+.0f}%", "Peso": f"{pesos[f]*100:.0f}%"} for f in pesos]
         st.dataframe(pd.DataFrame(imp_rows), use_container_width=True, height=220)
-        # Mini gráfico
         fig_k = px.bar(pd.DataFrame({
             "kpi": ["Conversão","Retenção","Suporte (↓)"],
             "valor": [conversao, retencao, suporte]
@@ -779,35 +907,27 @@ with TAB_UXM:
         fig_k.update_yaxes(tickformat=",.0%")
         st.plotly_chart(fig_k, use_container_width=True)
 
-
-# =====================================
+# =============================================================================
 # DOMUS – Employee Experience (Colaboradores)
-# =====================================
+# =============================================================================
 with TAB_DOMUS:
     st.title("Domus – Employee Experience")
     st.caption("Pilares de Imagem • Evolução • Priorização • Simulador (EX → KPIs de Pessoas)")
     st.divider()
 
-    # --------- Pilares (dos documentos) ---------
     PILARES = {
         "Conviver": ["Cultura", "Ambiente", "Flexibilidade", "Liderança & Colegas", "Identificação"],
         "Ser": ["Carreira", "Aprendizado", "Visibilidade", "Reconhecimento", "Remuneração"],
         "Viver": ["Work-life balance", "Estabilidade", "Benefícios", "Carga de trabalho", "Autonomia"],
         "Inspirar": ["Reputação", "Diversidade & ESG", "Inovação", "Propósito", "Polêmica"],
-    }  # conforme decks de Employer Brand/Employee Experience (Conviver/Ser/Viver/Inspirar)
+    }
 
-    # --------- Dados fictícios: imagem por pilar (Colaborador vs Mercado) ---------
-    np.random.seed(101)
+    np.random.seed(SEED + 101)
     pilares_rows = []
     for pilar, attrs in PILARES.items():
         for contexto in ["Colaboradores", "Mercado de talentos"]:
             score = float(np.clip(np.random.normal(0.64 if contexto=="Colaboradores" else 0.58, 0.08), 0.20, 0.95))
-            pilares_rows.append({
-                "pilar": pilar,
-                "contexto": contexto,
-                "score": score,
-                "hover": ", ".join(attrs)
-            })
+            pilares_rows.append({"pilar": pilar, "contexto": contexto, "score": score, "hover": ", ".join(attrs)})
     df_pilares = pd.DataFrame(pilares_rows)
 
     st.subheader("Pilares de imagem (Colaboradores × Mercado)")
@@ -816,7 +936,6 @@ with TAB_DOMUS:
         text_auto=".0%", hover_data={"hover": True, "pilar": False, "score":":.0%", "contexto": False},
         title="Conviver • Ser • Viver • Inspirar"
     )
-    # Hover custom: mostra subatributos de cada pilar
     fig_domus_img.update_traces(hovertemplate="<b>%{x}</b><br>Score: %{y:.0%}<br>Atributos: %{customdata[0]}")
     fig_domus_img.update_yaxes(tickformat=",.0%")
     fig_domus_img.update_layout(height=360, margin=dict(l=10, r=10, t=50, b=10))
@@ -824,14 +943,17 @@ with TAB_DOMUS:
 
     st.divider()
 
-    # --------- Evolução de EX (eNPS e Retenção/Turnover) ---------
     st.subheader("Evolução – EX (eNPS) e Turnover (últimos 12 meses)")
     meses = pd.date_range(end=pd.Timestamp.today().normalize(), periods=12, freq="MS")
+    eA = np.clip(np.linspace(0.30, 0.45, 12) + np.random.normal(0, 0.01, 12), -0.2, 0.95)
+    eB = np.clip(np.linspace(0.22, 0.35, 12) + np.random.normal(0, 0.01, 12), -0.2, 0.95)
+    tA = np.clip(np.linspace(0.20, 0.16, 12) + np.random.normal(0, 0.005, 12), 0.02, 0.40)
+    tB = np.clip(np.linspace(0.24, 0.21, 12) + np.random.normal(0, 0.005, 12), 0.02, 0.40)
     ex_evo = pd.DataFrame({
         "mes": list(meses)*2,
-        "grupo": np.repeat(["Colaboradores", "Mercado de talentos"], len(meses)),
-        "eNPS": np.clip(np.linspace(0.30, 0.45, 12).tolist() + np.linspace(0.22, 0.35, 12).tolist(), -0.2, 0.9),
-        "turnover": np.clip(np.linspace(0.20, 0.16, 12).tolist() + np.linspace(0.24, 0.21, 12).tolist(), 0.02, 0.40),
+        "grupo": ["Colaboradores"]*12 + ["Mercado de talentos"]*12,
+        "eNPS": list(eA) + list(eB),
+        "turnover": list(tA) + list(tB),
     })
     c1, c2 = st.columns(2)
     with c1:
@@ -847,7 +969,6 @@ with TAB_DOMUS:
 
     st.divider()
 
-    # --------- Priorização – Matriz Performance × Importância (25 atributos, 5 por pilar) ---------
     st.subheader("Priorização – Performance × Importância (Pilares e seus atributos)")
     pr_rows = []
     for pilar, attrs in PILARES.items():
@@ -856,9 +977,11 @@ with TAB_DOMUS:
             imp = float(np.clip(np.random.normal(0.58, 0.15), 0.10, 0.95))
             pr_rows.append({"pilar": pilar, "atributo": a, "performance": perf, "importancia": imp})
     df_pr = pd.DataFrame(pr_rows)
+    med_perf = df_pr["performance"].median()
+    med_imp = df_pr["importancia"].median()
     df_pr["zona"] = np.where(
-        (df_pr["performance"] < df_pr["performance"].median()) & (df_pr["importancia"] >= df_pr["importancia"].median()), "Desenvolver agora!",
-        np.where((df_pr["performance"] >= df_pr["performance"].median()) & (df_pr["importancia"] >= df_pr["importancia"].median()), "Comunicar agora!", "Acompanhar")
+        (df_pr["performance"] < med_perf) & (df_pr["importancia"] >= med_imp), "Desenvolver agora!",
+        np.where((df_pr["performance"] >= med_perf) & (df_pr["importancia"] >= med_imp), "Comunicar agora!", "Acompanhar")
     )
     fig_pr = px.scatter(df_pr, x="performance", y="importancia", color="zona", text="atributo", hover_data=["pilar"],
                         title="Matriz de Prioridades (EX)", size_max=18)
@@ -870,30 +993,26 @@ with TAB_DOMUS:
 
     st.divider()
 
-    # --------- Simulador – EX → KPIs de Pessoas ---------
     st.subheader("Simulador – EX (pilares) → KPIs de Pessoas")
-    st.caption("Ajuste os 4 pilares (±20%). EX impacta eNPS (↑), Turnover (↓), Reclamações internas (↓), Produtividade (↑).")
-
+    st.caption("Ajuste os 4 pilares (±30%). EX impacta eNPS (↑), Turnover (↓), Reclamações internas (↓), Produtividade (↑).")
     pesos = {"Conviver": 0.28, "Ser": 0.26, "Viver": 0.22, "Inspirar": 0.24}
     base_ex = 0.60
-
     cL, cM, cR = st.columns((1,1,1))
     with cL:
-        deltas = {p: st.slider(p, -20, 20, 0, 1, help=", ".join(PILARES[p])) for p in pesos}
-        ex_equity = base_ex * (1 + sum((deltas[p]/100.0)*pesos[p] for p in pesos))
-        ex_equity = float(np.clip(ex_equity, 0.01, 0.99))
+        deltas = {p: st.slider(p, -30, 30, 0, 1, help=", ".join(PILARES[p])) for p in pesos}
+        d_norm = {k: v/100 for k, v in deltas.items()}
+        efeito = weighted_sum(d_norm, pesos, scale=1.30)
+        ex_equity = clamp(base_ex * (1 + efeito), 0.01, 0.99)
         metric_card("EX (estimado)", f"{ex_equity*100:.1f}%")
-
     with cM:
-        enps = np.clip(0.10 + 0.9*ex_equity, -0.20, 0.95)        # ↑
-        turnover = np.clip(0.30 - 0.35*ex_equity, 0.02, 0.40)    # ↓
-        reclama = np.clip(0.28 - 0.30*ex_equity, 0.01, 0.40)     # ↓
-        prod = np.clip(0.60 + 0.5*ex_equity, 0.10, 0.99)         # ↑
+        enps = clamp(0.05 + 1.10*ex_equity, -0.20, 0.98)
+        turnover = clamp(0.32 - 0.50*ex_equity, 0.02, 0.45)
+        reclama = clamp(0.30 - 0.45*ex_equity, 0.01, 0.45)
+        prod = clamp(0.55 + 0.60*ex_equity, 0.10, 0.99)
         metric_card("eNPS (↑)", f"{enps*100:.1f}%")
         metric_card("Turnover (↓)", f"{turnover*100:.1f}%")
         metric_card("Reclamações (↓)", f"{reclama*100:.1f}%")
         metric_card("Produtividade (↑)", f"{prod*100:.1f}%")
-
     with cR:
         imp_rows = [{"Pilar": p, "% Δ pilar": f"{deltas[p]:+.0f}%", "Peso": f"{pesos[p]*100:.0f}%"} for p in pesos]
         st.dataframe(pd.DataFrame(imp_rows), use_container_width=True, height=212)
@@ -905,24 +1024,21 @@ with TAB_DOMUS:
         fig_kpis.update_layout(height=212, margin=dict(l=10, r=10, t=10, b=10))
         st.plotly_chart(fig_kpis, use_container_width=True)
 
-
-# =====================================
+# =============================================================================
 # e-BRAIN – Employer Brand Insights (marca empregadora)
-# =====================================
+# =============================================================================
 with TAB_EBRAIN:
     st.title("e-BRAIN – Employer Brand Insights")
-    st.caption("Módulos: Comportamento • Memória • Imagem • Equity • Estratégia")
+    st.caption("Comportamento • Memória • Imagem • Equity • Estratégia")
     st.divider()
 
-    # --------- Pilares (Conviver / Ser / Viver / Inspirar) e subatributos ---------
     PILARES_E = {
         "Conviver": ["Cultura", "Ambiente", "Flexibilidade", "Liderança & Colegas", "Identificação"],
         "Ser": ["Carreira", "Aprendizado", "Visibilidade", "Reconhecimento", "Remuneração"],
         "Viver": ["Work-life balance", "Estabilidade", "Benefícios", "Carga de trabalho", "Autonomia"],
         "Inspirar": ["Reputação", "Diversidade & ESG", "Inovação", "Propósito", "Polêmica"],
-    }  # conforme deck de Employer Brand/Employee Experience
+    }
 
-    # --------- 1) Comportamento (mercado de talentos) ---------
     st.subheader("Comportamento – Onde talentos buscam e avaliam empregadores")
     canais = ["LinkedIn", "Google", "Glassdoor", "Instagram", "YouTube", "Comunidades", "Indicações", "Portais de Vagas"]
     share = np.clip(np.random.dirichlet(np.ones(len(canais))) * 1.8, 0.03, None)
@@ -934,7 +1050,6 @@ with TAB_EBRAIN:
 
     st.divider()
 
-    # --------- 2) Memória (Funil de marca empregadora) ---------
     st.subheader("Memória – Funil de marca empregadora")
     etapas = ["Lembrança", "Familiaridade", "Consideração", "Preferência"]
     marcas = ["Marca A", "Marca B", "Marca C", "Marca D", "Marca E"]
@@ -956,7 +1071,6 @@ with TAB_EBRAIN:
 
     st.divider()
 
-    # --------- 3) Imagem (pilares com hover de subatributos) ---------
     st.subheader("Imagem – Pilares de percepção (A vs B)")
     marcas_comp = ["Marca A", "Marca B"]
     img_rows = []
@@ -975,7 +1089,6 @@ with TAB_EBRAIN:
 
     st.divider()
 
-    # --------- 4) Equity – KPIs de Employer Brand ---------
     st.subheader("Equity – KPIs (A vs B)")
     kpis = ["Me candidataria", "Aceitaria oferta menor", "Recomendaria", "Não trocaria de empresa", "É meu sonho trabalhar lá", "Daria meu máximo", "eNPS"]
     eq_vals = pd.DataFrame({
@@ -991,10 +1104,7 @@ with TAB_EBRAIN:
 
     st.divider()
 
-    # --------- 5) Estratégia – Priorização + EBIX (Participação do Branding) ---------
     st.subheader("Estratégia – Priorização & EBIX (Participação de Branding no resultado)")
-
-    # Matriz perf x importância (25 subatributos, 5 por pilar)
     pr_rows = []
     for pilar, attrs in PILARES_E.items():
         for a in attrs:
@@ -1002,9 +1112,11 @@ with TAB_EBRAIN:
             imp = float(np.clip(np.random.normal(0.60, 0.15), 0.10, 0.95))
             pr_rows.append({"pilar": pilar, "atributo": a, "performance": perf, "importancia": imp})
     df_pi_e = pd.DataFrame(pr_rows)
+    med_perf = df_pi_e["performance"].median()
+    med_imp = df_pi_e["importancia"].median()
     df_pi_e["zona"] = np.where(
-        (df_pi_e["performance"] < df_pi_e["performance"].median()) & (df_pi_e["importancia"] >= df_pi_e["importancia"].median()), "Desenvolver agora!",
-        np.where((df_pi_e["performance"] >= df_pi_e["performance"].median()) & (df_pi_e["importancia"] >= df_pi_e["importancia"].median()), "Comunicar agora!", "Acompanhar")
+        (df_pi_e["performance"] < med_perf) & (df_pi_e["importancia"] >= med_imp), "Desenvolver agora!",
+        np.where((df_pi_e["performance"] >= med_perf) & (df_pi_e["importancia"] >= med_imp), "Comunicar agora!", "Acompanhar")
     )
     fig_pi = px.scatter(df_pi_e, x="performance", y="importancia", color="zona", text="atributo", hover_data=["pilar"],
                         title="Matriz de Prioridades (Employer Brand)", size_max=18)
@@ -1014,7 +1126,6 @@ with TAB_EBRAIN:
     fig_pi.update_layout(height=420, margin=dict(l=10, r=10, t=50, b=10))
     st.plotly_chart(fig_pi, use_container_width=True)
 
-    # EBIX – participação do Employer Branding em resultados (R² ~ “participação”)
     kpis_res = ["Atração (me candidaria)", "Retenção (não trocaria)", "Aceite de ofertas", "Engajamento (daria meu máximo)", "eNPS"]
     ebix = pd.DataFrame({
         "kpi": kpis_res,
@@ -1024,7 +1135,6 @@ with TAB_EBRAIN:
     fig_ebix.update_yaxes(tickformat=",.0%")
     fig_ebix.update_layout(height=320, margin=dict(l=10, r=10, t=30, b=10))
     st.plotly_chart(fig_ebix, use_container_width=True)
-    
-st.divider()
-st.write(":grey[Demo Okiar • Dados 100% fictícios • v0.1 – Estrutura + BRAIN + MERIDIO]")
 
+st.divider()
+st.write(":grey[Okiar • Dados 100% fictícios • v1.0 – BRAIN • MERIDIO • MMX • UXM • Domus • e-BRAIN]")
