@@ -1,16 +1,4 @@
 # -*- coding: utf-8 -*-
-"""
-Okiar Demo – Estrutura + BRAIN + MERIDIO (Streamlit)
-Primeiro código: estrutura completa + abas BRAIN e MERIDIO prontas.
-
-Como rodar:
-    pip install streamlit plotly pandas numpy
-    streamlit run app.py
-
-Observações:
-- Dados fictícios, apenas para demonstração dos frameworks.
-- Abas futuras (MMX, UXM, Domus, e‑BRAIN) já estão criadas como placeholders.
-"""
 
 import math
 import random
